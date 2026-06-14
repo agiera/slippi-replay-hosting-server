@@ -1,0 +1,90 @@
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #0c1326;
+  background: radial-gradient(circle at 10% 20%, #e8f1ff, #f6f9ff 45%, #fef6e7 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.auth-layout,
+.dash-layout {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-card,
+.dash-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(12, 19, 38, 0.08);
+  box-shadow: 0 20px 40px rgba(12, 19, 38, 0.08);
+}
+
+.subtitle {
+  margin-top: 0;
+  color: #4e5b7a;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+input,
+button {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #cfd8eb;
+  font-size: 1rem;
+  padding: 10px 12px;
+}
+
+button {
+  border: none;
+  background: #0f1f44;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.ghost {
+  margin-top: 12px;
+  background: #fff;
+  color: #0f1f44;
+  border: 1px solid #0f1f44;
+}
+
+button.link {
+  display: inline;
+  width: auto;
+  border: none;
+  background: transparent;
+  color: #173a8a;
+  padding: 0;
+}
+
+.error {
+  color: #c62828;
+}
+
+.toggle {
+  margin-top: 12px;
+}
+
+pre {
+  overflow: auto;
+  background: #f0f4ff;
+  padding: 12px;
+  border-radius: 8px;
+}
