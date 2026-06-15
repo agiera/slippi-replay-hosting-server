@@ -22,6 +22,18 @@ class Settings(BaseSettings):
 
     FRONTEND_URL: str = "http://localhost:5173"
 
+    SUPERUSER_USERNAME: str = ""
+    SUPERUSER_EMAIL: str = ""
+    SUPERUSER_PASSWORD: str = ""
+    REPLAY_STORAGE_DIR: str = "/app/uploads"
+    FTP_ENABLED: bool = False
+    FTP_HOST: str = "0.0.0.0"
+    FTP_PORT: int = 2121
+    FTP_PASSIVE_PORTS: str = ""
+    FTP_STAGING_DIR: str = "/tmp/slippi-ftp-staging"
+    FTP_MAX_CONNECTIONS: int = 128
+    FTP_MAX_CONNECTIONS_PER_IP: int = 8
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]

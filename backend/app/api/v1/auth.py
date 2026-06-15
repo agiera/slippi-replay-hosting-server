@@ -16,6 +16,7 @@ from app.schemas.auth import LoginRequest, LogoutRequest, RefreshRequest, Signup
 from app.schemas.user import UserPublic
 from app.services.auth_service import authenticate_user, issue_token_pair, signup_user
 from app.services.google_oidc import exchange_code_for_tokens, fetch_google_userinfo
+from app.services.user_service import ensure_user_in_public_repository
 
 router = APIRouter()
 
@@ -151,11 +152,14 @@ async def google_callback(code: str = Query(...), db: Session = Depends(get_db))
         db.add(user)
         db.commit()
         db.refresh(user)
+        ensure_user_in_public_repository(db, user)
     elif not user.google_sub:
         user.google_sub = google_sub
         db.add(user)
         db.commit()
         db.refresh(user)
+
+    ensure_user_in_public_repository(db, user)
 
     access_token, refresh_token = issue_token_pair(db, user)
     return RedirectResponse(

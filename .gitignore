@@ -13,3 +13,6 @@ dist/
 
 # Misc
 .DS_Store
+
+# backend
+backend/uploads

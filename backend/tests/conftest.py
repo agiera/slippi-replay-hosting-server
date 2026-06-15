@@ -11,14 +11,31 @@ from app.main import app
 
 
 @pytest.fixture()
-def client(tmp_path) -> Generator[TestClient, None, None]:
+def testing_session_local(tmp_path):
     db_file = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 
+    yield TestingSessionLocal
+
+    Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture()
+def db_session(testing_session_local) -> Generator[Session, None, None]:
+    db = testing_session_local()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.fixture()
+def client(testing_session_local) -> Generator[TestClient, None, None]:
+
     def override_get_db() -> Generator[Session, None, None]:
-        db = TestingSessionLocal()
+        db = testing_session_local()
         try:
             yield db
         finally:
@@ -30,4 +47,3 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
         yield test_client
 
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=engine)

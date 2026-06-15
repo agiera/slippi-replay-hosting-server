@@ -1,0 +1,145 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.v1.deps import get_current_user, get_superuser
+from app.db.session import get_db
+from app.models.api_token import ApiToken
+from app.models.repository import Repository
+from app.models.user import User
+from app.schemas.user import UserPublic
+from app.schemas.user_management import (
+    ApiTokenCreateRequest,
+    ApiTokenCreateResponse,
+    ApiTokenPublic,
+    RepositoryCreateRequest,
+    RepositoryPublic,
+    UserRoleUpdateRequest,
+    UserRepositoriesUpdateRequest,
+)
+from app.services.user_service import (
+    create_api_token_for_user,
+    get_or_create_public_repository,
+    revoke_api_token_for_user,
+)
+
+router = APIRouter()
+
+
+@router.get("", response_model=list[UserPublic])
+def list_users(db: Session = Depends(get_db), _: User = Depends(get_superuser)) -> list[UserPublic]:
+    users = db.scalars(select(User).order_by(User.id.asc())).all()
+    return [UserPublic.model_validate(user) for user in users]
+
+
+@router.patch("/{user_id}/role", response_model=UserPublic)
+def update_user_role(
+    user_id: int,
+    payload: UserRoleUpdateRequest,
+    db: Session = Depends(get_db),
+    current_superuser: User = Depends(get_superuser),
+) -> UserPublic:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if user.id == current_superuser.id and payload.role != "superuser":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot remove your own superuser role")
+
+    user.role = payload.role
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return UserPublic.model_validate(user)
+
+
+@router.get("/me/api-tokens", response_model=list[ApiTokenPublic])
+def list_my_api_tokens(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ApiTokenPublic]:
+    tokens = db.scalars(
+        select(ApiToken).where(ApiToken.user_id == current_user.id).order_by(ApiToken.created_at.desc())
+    ).all()
+    return [ApiTokenPublic.model_validate(token) for token in tokens]
+
+
+@router.post("/me/api-tokens", response_model=ApiTokenCreateResponse)
+def create_my_api_token(
+    payload: ApiTokenCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ApiTokenCreateResponse:
+    if current_user.role not in {"uploader", "superuser"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not approved for upload token generation",
+        )
+
+    token_row, raw_token = create_api_token_for_user(
+        db,
+        current_user,
+        payload.collection_name,
+        payload.repository_ids,
+    )
+    return ApiTokenCreateResponse(token=raw_token, token_info=ApiTokenPublic.model_validate(token_row))
+
+
+@router.delete("/me/api-tokens/{token_id}")
+def revoke_my_api_token(
+    token_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    revoke_api_token_for_user(db, current_user, token_id)
+    return {"message": "API token revoked"}
+
+
+@router.get("/repositories", response_model=list[RepositoryPublic])
+def list_repositories(db: Session = Depends(get_db), _: User = Depends(get_superuser)) -> list[RepositoryPublic]:
+    repositories = db.scalars(select(Repository).order_by(Repository.name.asc())).all()
+    return [RepositoryPublic.model_validate(repo) for repo in repositories]
+
+
+@router.post("/repositories", response_model=RepositoryPublic)
+def create_repository(
+    payload: RepositoryCreateRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_superuser),
+) -> RepositoryPublic:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Repository name is required")
+
+    existing = db.scalar(select(Repository).where(Repository.name == name))
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Repository already exists")
+
+    repo = Repository(name=name, is_public=False)
+    db.add(repo)
+    db.commit()
+    db.refresh(repo)
+    return RepositoryPublic.model_validate(repo)
+
+
+@router.put("/{user_id}/repositories", response_model=UserPublic)
+def update_user_repositories(
+    user_id: int,
+    payload: UserRepositoriesUpdateRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_superuser),
+) -> UserPublic:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    public_repo = get_or_create_public_repository(db)
+    unique_ids = set(payload.repository_ids)
+    unique_ids.add(public_repo.id)
+
+    repositories = db.scalars(select(Repository).where(Repository.id.in_(unique_ids))).all()
+    if len(repositories) != len(unique_ids):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="One or more repositories do not exist")
+
+    user.repositories = repositories
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return UserPublic.model_validate(user)

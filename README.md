@@ -11,6 +11,8 @@ A minimal full-stack starter with:
 - bcrypt password hashing + PyJWT tokens
 - Username/password auth
 - Google OIDC login flow
+- Role-based user permissions (`user`, `uploader`, `superuser`)
+- User API token generation/revocation for upload workflows
 - Docker Compose local development
 
 ## Project Structure
@@ -48,6 +50,14 @@ A minimal full-stack starter with:
 - `GET /api/v1/auth/google/login`
 - `GET /api/v1/auth/google/callback`
 
+## User Management Endpoints
+
+- `GET /api/v1/users` (superuser only)
+- `PATCH /api/v1/users/{user_id}/role` (superuser only)
+- `GET /api/v1/users/me/api-tokens`
+- `POST /api/v1/users/me/api-tokens` (uploader/superuser)
+- `DELETE /api/v1/users/me/api-tokens/{token_id}`
+
 ## Token Behavior
 
 - Login/signup return an access token and refresh token.
@@ -69,7 +79,33 @@ docker compose run --rm backend pytest -q
 3. Authorized redirect URI:
    - `http://localhost:8000/api/v1/auth/google/callback`
 
+## Superuser Bootstrap
+
+Set these values in `.env` to automatically create/update a superuser on backend startup:
+
+- `SUPERUSER_USERNAME`
+- `SUPERUSER_EMAIL`
+- `SUPERUSER_PASSWORD`
+
 ## Notes
 
 - On backend container start, migrations run automatically via `alembic upgrade head`.
 - For production, replace dev servers and configure secure cookies/HTTPS and refresh-token flows.
+
+## FTP Uploads (Wii)
+
+The backend can expose an FTP endpoint for direct Wii/Nintendont replay uploads.
+
+- Set `FTP_ENABLED=true` in `.env`
+- Use `FTP_PORT` to choose the listening port (default `2121`)
+- If needed, set passive mode range with `FTP_PASSIVE_PORTS`, e.g. `30000-30050`
+
+Authentication model:
+
+- FTP `username`: your account username
+- FTP `password`: collection token value (the raw API token string)
+
+Repository routing:
+
+- Upload into a repository directory (e.g. `public/Game_...slp`) when the token can access multiple repositories.
+- If the token has a single repository, root uploads are accepted and mapped there.

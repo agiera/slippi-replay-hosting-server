@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
+from app.services.user_service import ensure_user_in_public_repository
 
 
 def signup_user(db: Session, username: str, email: str, password: str) -> User:
@@ -24,6 +25,7 @@ def signup_user(db: Session, username: str, email: str, password: str) -> User:
     db.add(user)
     db.commit()
     db.refresh(user)
+    ensure_user_in_public_repository(db, user)
     return user
 
 
