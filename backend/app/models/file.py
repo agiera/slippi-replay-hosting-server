@@ -13,5 +13,6 @@ class File(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     birth_time: Mapped[str | None] = mapped_column(String, nullable=True)
+    tournament_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     game: Mapped["Game"] = relationship(back_populates="file", uselist=False, cascade="all, delete-orphan")

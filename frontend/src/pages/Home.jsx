@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { fetchReplayFiles, fetchReplayFilterOptions } from "../lib/api";
+import { fetchReplayFiles, fetchReplayFilterOptions, fetchStreamStatus } from "../lib/api";
 import crownImage from "../assets/images/crown.png";
 
 const PAGE_SIZE = 40;
+const STREAM_SOURCE_STALE_MS = 5 * 60 * 1000;
+const STREAM_EVENT_ROW_LIMIT = 20;
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 const STAGE_IMAGES = import.meta.glob("../assets/images/stages/*.png", {
   eager: true,
   import: "default",
@@ -96,7 +99,8 @@ const INITIAL_FILTERS = {
   max_rank: "",
   player: "",
   repository: "",
-  collection: "",
+  tournament: "",
+  source: "",
   date_from: "",
   date_to: "",
 };
@@ -125,6 +129,8 @@ const RANK_FILTER_LIST = [
   "Master_III",
   "Grand_Master",
 ];
+
+const SLIPPILAB_URL = (import.meta.env.VITE_SLIPPILAB_URL || "http://localhost:4173").replace(/\/$/, "");
 
 function SearchableMultiSelect({ label, selected, options, onChange }) {
   const [open, setOpen] = useState(false);
@@ -369,7 +375,8 @@ function parseFiltersFromSearch(searchParams) {
     max_rank: searchParams.get("max_rank") || "",
     player: searchParams.get("player") || "",
     repository: searchParams.get("repository") || "",
-    collection: searchParams.get("collection") || "",
+    tournament: searchParams.get("tournament") || "",
+    source: searchParams.get("source") || searchParams.get("collection") || "",
     date_from: searchParams.get("date_from") || "",
     date_to: searchParams.get("date_to") || "",
   };
@@ -445,6 +452,46 @@ function formatStageName(stageId) {
   }
 
   return STAGE_NAME_BY_ID[normalizedId] || `Stage ${normalizedId}`;
+}
+
+function parseFolderMetadata(folder) {
+  if (!folder) {
+    return { repository: null, source: null };
+  }
+
+  const parts = String(folder)
+    .split("/")
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return { repository: null, source: null };
+  }
+
+  if (parts[0] === "uploads") {
+    const repository = parts[1] || null;
+    let source = null;
+    if (parts[2]) {
+      const maybeSource = parts[2];
+      if (!(maybeSource.length === 4 && /^\d+$/.test(maybeSource))) {
+        source = maybeSource;
+      }
+    }
+    return { repository, source };
+  }
+
+  return {
+    repository: parts[0] || null,
+    source: parts[1] || null,
+  };
+}
+
+function getResolvedTournamentName(file) {
+  return (
+    file?.resolved_tournament_name ||
+    file?.current_tournament_name ||
+    file?.tournament_name ||
+    file?.tournament ||
+    null
+  );
 }
 
 function getStageRowStyle(stageId) {
@@ -531,6 +578,28 @@ function renderPlayerCell(file, index) {
   );
 }
 
+function streamPreviewName(player) {
+  if (!player) return null;
+  return player.display_name || player.tag || player.slippi_code || null;
+}
+
+function streamEventStatusLabel(status) {
+  switch ((status || "").toLowerCase()) {
+    case "completed":
+      return "Upload Completed";
+    case "failed":
+      return "Upload Failed";
+    case "incomplete":
+      return "Upload Incomplete";
+    case "abandoned":
+      return "Disconnected Before Upload";
+    case "started":
+      return "Stream Started";
+    default:
+      return "Streaming";
+  }
+}
+
 export default function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialFromUrl = parseFiltersFromSearch(searchParams);
@@ -538,12 +607,140 @@ export default function Home() {
   const [debouncedFilters, setDebouncedFilters] = useState(initialFromUrl);
   const [files, setFiles] = useState([]);
   const [repoOptions, setRepoOptions] = useState([]);
-  const [collectionOptions, setCollectionOptions] = useState([]);
+  const [tournamentOptions, setTournamentOptions] = useState([]);
+  const [sourceOptions, setSourceOptions] = useState([]);
   const [cursor, setCursor] = useState(null);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [streamStatus, setStreamStatus] = useState({ tournament: null, sources: [], events: [] });
+  const [streamError, setStreamError] = useState("");
+  const [streamAutoRefreshPaused, setStreamAutoRefreshPaused] = useState(false);
+  const [nowMs, setNowMs] = useState(Date.now());
   const sentinelRef = useRef(null);
+
+  const streamSourceRows = useMemo(
+    () =>
+      (streamStatus.sources || [])
+        .filter((source) => {
+          if (source.connected) {
+            return true;
+          }
+          const updatedAt = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
+          if (Number.isNaN(updatedAt)) {
+            return false;
+          }
+          return nowMs - updatedAt <= STREAM_SOURCE_STALE_MS;
+        })
+        .map((source) => {
+          const preview = Array.isArray(source.player_preview) ? source.player_preview : [];
+          const p1 = preview.find((player) => Number(player?.port) === 1) || preview[0] || null;
+          const p2 = preview.find((player) => Number(player?.port) === 2) || preview[1] || null;
+          const p1Name = streamPreviewName(p1) || source.source_name;
+          const p2Name = streamPreviewName(p2) || source.username;
+          const startedAt = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
+          const gameDuration = Number.isNaN(startedAt) ? null : Math.max(0, Math.floor((nowMs - startedAt) / 1000));
+          return {
+            id: null,
+            _streaming: true,
+            _streamKind: "source",
+            _streamConnected: Boolean(source.connected),
+            _streamKey: `${source.source_name}-${source.username}`,
+            player_1: p1Name,
+            player_2: p2Name,
+            player_1_info: p1
+              ? {
+                  name: p1Name,
+                  connect_code: p1.slippi_code || "-",
+                  port: Number(p1.port) || 1,
+                  rank: p1.rank || null,
+                  rating: p1.rating ?? null,
+                }
+              : null,
+            player_2_info: p2
+              ? {
+                  name: p2Name,
+                  connect_code: p2.slippi_code || "-",
+                  port: Number(p2.port) || 2,
+                  rank: p2.rank || null,
+                  rating: p2.rating ?? null,
+                }
+              : null,
+            stage: null,
+            game_duration: gameDuration,
+            datetime_played: source.updated_at || null,
+            stream_source_name: source.source_name,
+            stream_repositories: source.repositories || [],
+            resolved_tournament_name: source.resolved_tournament_name || null,
+            name: `live:${source.source_name}`,
+          };
+        }),
+    [streamStatus.sources, nowMs]
+  );
+
+  const streamSourceByName = useMemo(() => {
+    const byName = new Map();
+    for (const source of streamStatus.sources || []) {
+      if (source?.source_name) {
+        byName.set(source.source_name, source);
+      }
+    }
+    return byName;
+  }, [streamStatus.sources]);
+
+  const streamEventRows = useMemo(() => {
+    const events = Array.isArray(streamStatus.events) ? streamStatus.events : [];
+    return events.slice(0, STREAM_EVENT_ROW_LIMIT).map((event) => {
+      const source = streamSourceByName.get(event.source_name) || null;
+      const preview = Array.isArray(source?.player_preview) ? source.player_preview : [];
+      const p1 = preview.find((player) => Number(player?.port) === 1) || preview[0] || null;
+      const p2 = preview.find((player) => Number(player?.port) === 2) || preview[1] || null;
+      const p1Name = streamPreviewName(p1) || event.source_name || "-";
+      const p2Name = streamPreviewName(p2) || event.username || "-";
+
+      return {
+        id: null,
+        _streaming: true,
+        _streamEvent: true,
+        _streamKind: "event",
+        _streamStatus: event.status,
+        _streamKey: `${event.source_name}-${event.timestamp}-${event.status}-${event.filename || ""}`,
+        player_1: p1Name,
+        player_2: p2Name,
+        player_1_info: p1
+          ? {
+              name: p1Name,
+              connect_code: p1.slippi_code || "-",
+              port: Number(p1.port) || 1,
+              rank: p1.rank || null,
+              rating: p1.rating ?? null,
+            }
+          : null,
+        player_2_info: p2
+          ? {
+              name: p2Name,
+              connect_code: p2.slippi_code || "-",
+              port: Number(p2.port) || 2,
+              rank: p2.rank || null,
+              rating: p2.rating ?? null,
+            }
+          : null,
+        stage: null,
+        game_duration: null,
+        datetime_played: event.timestamp || null,
+        stream_source_name: event.source_name,
+        stream_repositories: event.repository ? [event.repository] : [],
+        resolved_tournament_name: event.resolved_tournament_name || null,
+        stream_event_filename: event.filename || "",
+        name: `event:${event.source_name}`,
+      };
+    });
+  }, [streamStatus.events, streamSourceByName]);
+
+  const tableRows = useMemo(
+    () => [...streamSourceRows, ...streamEventRows, ...files],
+    [streamSourceRows, streamEventRows, files]
+  );
 
   useEffect(() => {
     const nextFilters = parseFiltersFromSearch(searchParams);
@@ -580,11 +777,13 @@ export default function Home() {
           return;
         }
         setRepoOptions(Array.isArray(data.repositories) ? data.repositories : []);
-        setCollectionOptions(Array.isArray(data.collections) ? data.collections : []);
+        setTournamentOptions(Array.isArray(data.tournaments) ? data.tournaments : []);
+        setSourceOptions(Array.isArray(data.sources) ? data.sources : []);
       } catch {
         if (!cancelled) {
           setRepoOptions([]);
-          setCollectionOptions([]);
+          setTournamentOptions([]);
+          setSourceOptions([]);
         }
       }
     }
@@ -594,6 +793,54 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let timer = null;
+
+    async function refreshOnce() {
+      try {
+        const data = await fetchStreamStatus();
+        if (active) {
+          setStreamStatus(data);
+          setStreamError("");
+          setStreamAutoRefreshPaused(false);
+        }
+      } catch (err) {
+        if (active) {
+          setStreamError(`${err.message || "Failed to load stream status"}. Auto-refresh paused.`);
+          setStreamAutoRefreshPaused(true);
+        }
+      } finally {
+        // Stream rows refresh independently from replay file loading state.
+      }
+    }
+
+    async function refreshLoop() {
+      await refreshOnce();
+      if (!active || streamAutoRefreshPaused) {
+        return;
+      }
+      timer = setTimeout(refreshLoop, 4000);
+    }
+
+    refreshLoop();
+
+    return () => {
+      active = false;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [streamAutoRefreshPaused]);
+
+  useEffect(() => {
+    const timerId = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => clearInterval(timerId);
   }, []);
 
   useEffect(() => {
@@ -663,6 +910,51 @@ export default function Home() {
     setFilters(INITIAL_FILTERS);
   }
 
+  const isInitialLoading = loading && files.length === 0;
+
+  async function openViewerInNewTab(fileId) {
+    if (!fileId) {
+      return;
+    }
+    const replayUrl = new URL(`${API_BASE.replace(/\/+$/, "")}/replays/files/${fileId}/download`);
+
+    setError("");
+    const viewerUrl = `${SLIPPILAB_URL}?replayUrl=${encodeURIComponent(replayUrl.toString())}`;
+    window.open(viewerUrl, "_blank", "noopener,noreferrer");
+  }
+
+  function downloadReplay(fileId) {
+    if (!fileId) {
+      return;
+    }
+    const replayUrl = new URL(`${API_BASE.replace(/\/+$/, "")}/replays/files/${fileId}/download`);
+    window.open(replayUrl.toString(), "_blank", "noopener,noreferrer");
+  }
+
+  function openInSlippi(fileId) {
+    if (!fileId) {
+      return;
+    }
+    const replayUrl = new URL(`${API_BASE.replace(/\/+$/, "")}/replays/files/${fileId}/download`);
+    window.location.href = `slippi://play?path=${encodeURIComponent(replayUrl.toString())}`;
+  }
+
+  async function onRetryStreamConnection() {
+    setStreamAutoRefreshPaused(false);
+    setStreamError("");
+    try {
+      const data = await fetchStreamStatus();
+      setStreamStatus(data);
+    } catch (err) {
+      setStreamError(`${err.message || "Failed to load stream status"}. Auto-refresh paused.`);
+      setStreamAutoRefreshPaused(true);
+    }
+  }
+
+  function filterByStreamSource(sourceName) {
+    setFilters((prev) => ({ ...prev, source: sourceName || "" }));
+  }
+
   return (
     <main className="home-layout">
       <section className="top-filter-menu">
@@ -674,10 +966,16 @@ export default function Home() {
             onChange={(value) => setFilters((prev) => ({ ...prev, repository: value }))}
           />
           <SearchableMultiSelect
-            label="Collection"
-            selected={filters.collection}
-            options={collectionOptions}
-            onChange={(value) => setFilters((prev) => ({ ...prev, collection: value }))}
+            label="Tournament"
+            selected={filters.tournament}
+            options={tournamentOptions}
+            onChange={(value) => setFilters((prev) => ({ ...prev, tournament: value }))}
+          />
+          <SearchableMultiSelect
+            label="Source"
+            selected={filters.source}
+            options={sourceOptions}
+            onChange={(value) => setFilters((prev) => ({ ...prev, source: value }))}
           />
         </div>
       </section>
@@ -722,51 +1020,166 @@ export default function Home() {
         </aside>
 
         <section className="home-panel">
-        <h1>Replay Files</h1>
-        <p className="subtitle">Browse all indexed Slippi files in the database.</p>
 
-        {loading && files.length === 0 && <p>Loading files...</p>}
         {error && <p className="error">{error}</p>}
 
         {!error && (
           <div className="file-table-wrap">
             <table className="file-table">
-              <thead>
-                <tr>
-                  <th>Player 1</th>
-                  <th>Player 2</th>
-                  <th>Stage</th>
-                  <th>Game Duration</th>
-                  <th>DateTime Played</th>
-                </tr>
-              </thead>
               <tbody>
-                {files.length === 0 && (
+                {isInitialLoading &&
+                  Array.from({ length: 6 }).map((_, idx) => (
+                    <tr key={`loading-${idx}`} className="file-row-loading">
+                      <td>
+                        <div className="shimmer-line shimmer-line-mid" />
+                      </td>
+                      <td>
+                        <div className="shimmer-line shimmer-line-wide" />
+                      </td>
+                      <td>
+                        <div className="shimmer-line shimmer-line-wide" />
+                      </td>
+                      <td>
+                        <div className="shimmer-line shimmer-line-mid" />
+                      </td>
+                      <td>
+                        <div className="shimmer-line shimmer-line-short" />
+                      </td>
+                    </tr>
+                  ))}
+
+                {!isInitialLoading && tableRows.length === 0 && (
                   <tr>
                     <td colSpan={5}>No files found.</td>
                   </tr>
                 )}
-                {files.map((file) => (
+                {tableRows.map((file) => {
+                  const isStreamingRow = Boolean(file._streaming);
+                  const isStreamEventRow = Boolean(file._streamEvent);
+                  const fileId = file.id ?? file._id;
+                  const folderMeta = parseFolderMetadata(file.folder);
+                  const resolvedTournamentName = getResolvedTournamentName(file);
+                  const repoTournamentLabel = isStreamingRow
+                    ? (
+                      resolvedTournamentName ||
+                      streamStatus?.tournament?.current_tournament_name ||
+                      streamStatus?.tournament?.name ||
+                      streamStatus?.tournament?.repository_name ||
+                      file.stream_repositories?.[0] ||
+                      folderMeta.repository ||
+                      "Streaming"
+                    )
+                    : (resolvedTournamentName || folderMeta.repository || "-");
+                  const sourceLabel = isStreamingRow
+                    ? (
+                      isStreamEventRow
+                        ? `${file.stream_source_name || "-"} - ${streamEventStatusLabel(file._streamStatus)}`
+                        : (file.stream_source_name || "-")
+                    )
+                    : (file.source_name || file.collection_name || folderMeta.source || "-");
+                  const streamBadgeLabel = isStreamEventRow
+                    ? "EVENT"
+                    : file._streamConnected
+                      ? "LIVE"
+                      : "RECENT";
+                  return (
                   <tr
-                    key={`${file.name}-${file.datetime_played || "unknown"}-${file.player_1 || "p1"}`}
+                    key={
+                      isStreamingRow
+                        ? `stream-${file._streamKey}`
+                        : `${file.name}-${file.datetime_played || "unknown"}-${file.player_1 || "p1"}`
+                    }
                     className="stage-row"
                     style={getStageRowStyle(file.stage)}
                   >
+                    <td>
+                      <div className="row-meta-cell">
+                        {isStreamingRow ? (
+                          <span className="live-pill">
+                            <span className="live-dot" aria-hidden="true" />
+                            {streamBadgeLabel}
+                          </span>
+                        ) : null}
+                        <div className="row-meta-primary">{repoTournamentLabel}</div>
+                        <div className="row-meta-secondary">{sourceLabel}</div>
+                      </div>
+                    </td>
                     <td>{renderPlayerCell(file, 1)}</td>
                     <td>{renderPlayerCell(file, 2)}</td>
-                    <td>{formatStageName(file.stage)}</td>
-                    <td>{formatGameDuration(file.game_duration)}</td>
-                    <td>{formatPlayedDateTime(file.datetime_played)}</td>
+                    <td>
+                      <div className="row-game-stack">
+                        <div className="row-game-stage">
+                          {isStreamingRow
+                            ? (isStreamEventRow ? streamEventStatusLabel(file._streamStatus) : "Streaming")
+                            : formatStageName(file.stage)}
+                        </div>
+                        <div className="row-game-duration">{formatGameDuration(file.game_duration)}</div>
+                        <div className="row-game-date">{formatPlayedDateTime(file.datetime_played)}</div>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="viewer-row-actions">
+                        {isStreamingRow ? (
+                          <>
+                            <button
+                              type="button"
+                              className="viewer-row-btn viewer-row-btn-secondary"
+                              onClick={() => filterByStreamSource(file.stream_source_name)}
+                            >
+                              Filter Source
+                            </button>
+                            <button
+                              type="button"
+                              className="viewer-row-btn viewer-row-btn-secondary"
+                              onClick={() => void onRetryStreamConnection()}
+                            >
+                              Refresh Stream
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="viewer-row-btn"
+                              onClick={() => openInSlippi(fileId)}
+                              disabled={!fileId}
+                            >
+                              View in Slippi
+                            </button>
+                            <button
+                              type="button"
+                              className="viewer-row-btn"
+                              onClick={() => void openViewerInNewTab(fileId)}
+                              disabled={!fileId}
+                            >
+                              View on SlippiLab
+                            </button>
+                            <button
+                              type="button"
+                              className="viewer-row-btn"
+                              onClick={() => downloadReplay(fileId)}
+                              disabled={!fileId}
+                            >
+                              Download
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
 
+        {streamError && <p className="error">{streamError}</p>}
+
         <div ref={sentinelRef} className="scroll-sentinel" />
         {loading && files.length > 0 && <p>Loading more...</p>}
         {!hasMore && files.length > 0 && <p className="subtitle">End of results.</p>}
+
         </section>
       </div>
     </main>

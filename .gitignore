@@ -16,3 +16,5 @@ dist/
 
 # backend
 backend/uploads
+uploads
+uploads-view-archive

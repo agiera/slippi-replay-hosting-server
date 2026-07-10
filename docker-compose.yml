@@ -26,10 +26,15 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
+      REPLAY_VIEW_ARCHIVE_DIR: /app/uploads-view-archive
     ports:
       - "8000:8000"
+      - "2121:2121"
+      - "22100-22109:22100-22109"
     volumes:
       - ./backend:/app
+      - ./uploads:/app/uploads
+      - ./uploads-view-archive:/app/uploads-view-archive
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
@@ -44,6 +49,17 @@ services:
       - "5173:5173"
     volumes:
       - ./frontend:/app
+      - /app/node_modules
+
+  slippilab:
+    image: node:20-alpine
+    working_dir: /app
+    command: >
+      sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 4173"
+    ports:
+      - "4173:4173"
+    volumes:
+      - ./slippilab:/app
       - /app/node_modules
 
 volumes:

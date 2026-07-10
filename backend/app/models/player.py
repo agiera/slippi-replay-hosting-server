@@ -24,5 +24,7 @@ class Player(Base):
     display_name: Mapped[str | None] = mapped_column(String, nullable=True)
     tag: Mapped[str | None] = mapped_column(String, nullable=True)
     user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    startgg_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    parrygg_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     game: Mapped["Game"] = relationship(back_populates="players")

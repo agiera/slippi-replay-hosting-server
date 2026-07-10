@@ -1,0 +1,3 @@
+[submodule "slippilab"]
+	path = slippilab
+	url = git@github.com:frankborden/slippilab.git

@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 
 import { getAccessToken, logout } from "../lib/api";
 
+const SLIPPILAB_URL = (import.meta.env.VITE_SLIPPILAB_URL || "http://localhost:4173").replace(/\/$/, "");
+
 export default function TopNav() {
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getAccessToken()));
 
@@ -25,11 +27,9 @@ export default function TopNav() {
           <Link className="top-nav-link" to="/">
             Replays
           </Link>
-          {isAuthenticated && (
-            <Link className="top-nav-link" to="/dashboard">
-              Dashboard
-            </Link>
-          )}
+          <a className="top-nav-link" href={SLIPPILAB_URL} target="_blank" rel="noreferrer">
+            SlippiLab
+          </a>
         </div>
         <div className="top-nav-right">
           {isAuthenticated ? (

@@ -52,6 +52,12 @@ def _resolve_repositories_for_token(db: Session, user: User, repository_ids: lis
         return [public_repo]
 
     unique_ids = list(dict.fromkeys(repository_ids))
+    if len(unique_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A source can only belong to one repository",
+        )
+
     selected = db.scalars(select(Repository).where(Repository.id.in_(unique_ids))).all()
     if len(selected) != len(unique_ids):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="One or more repositories do not exist")
@@ -110,26 +116,26 @@ def ensure_superuser_exists(db: Session) -> None:
 
 
 def create_api_token_for_user(
-    db: Session, user: User, collection_name: str, repository_ids: list[int] | None = None
+    db: Session, user: User, source_name: str, repository_ids: list[int] | None = None
 ) -> tuple[ApiToken, str]:
-    normalized_collection_name = collection_name.strip()
-    if not normalized_collection_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Collection name is required")
+    normalized_source_name = source_name.strip()
+    if not normalized_source_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source name is required")
 
     existing = db.scalar(
         select(ApiToken).where(
-            ApiToken.collection_name == normalized_collection_name,
+            ApiToken.source_name == normalized_source_name,
         )
     )
     if existing:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Collection name must be globally unique")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source name must be globally unique")
 
     repositories = _resolve_repositories_for_token(db, user, repository_ids)
     raw_token = f"slp_{secrets.token_urlsafe(32)}"
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     token = ApiToken(
         user_id=user.id,
-        collection_name=normalized_collection_name,
+        source_name=normalized_source_name,
         token_prefix=raw_token[:12],
         token_hash=token_hash,
         repositories=repositories,

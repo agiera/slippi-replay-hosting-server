@@ -1,14 +1,25 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import String, and_, exists, func, or_, select
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from fastapi.responses import FileResponse
+from sqlalchemy import String, and_, exists, false, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.api_token import ApiToken
 from app.models.file import File
 from app.models.game import Game
 from app.models.player import Player
+from app.models.repository import Repository
+from app.models.tournament_source import TournamentSource
+from app.models.tournament_series import TournamentSeries
+from app.schemas.streaming import StreamStatusResponse, TournamentSeriesPublic
 from app.schemas.replay import ReplayFileListResponse, ReplayFilePublic, ReplayPlayerPublic
+from app.services.ftp_server import get_stream_status_snapshot
 from app.services.slippi_profile import fetch_profile_by_connect_code
+from app.services.tournament_slug import resolve_tournament_name
+from app.services.view_cache import PEPPI_SUFFIX, get_cached_replay_path, prune_view_cache, rebuild_cached_replay_from_archive
 
 router = APIRouter()
 
@@ -140,25 +151,75 @@ def _matches_rating_filter(
     return True
 
 
+@router.get("/files/{file_id}/download")
+def download_file(file_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    prune_view_cache()
+
+    file_row = db.get(File, file_id)
+    if not file_row:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    storage_root = Path(settings.REPLAY_STORAGE_DIR).resolve()
+    candidate = (storage_root / file_row.folder / file_row.name).resolve()
+
+    if storage_root not in candidate.parents and candidate != storage_root:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Replay file is missing from storage")
+
+    # Canonical storage uses peppi; serve temporary raw replay cache for external viewers.
+    if file_row.name.endswith(PEPPI_SUFFIX):
+        cached = get_cached_replay_path(file_row.folder, file_row.name)
+        if not cached:
+            cached = rebuild_cached_replay_from_archive(file_row.folder, file_row.name)
+        if not cached:
+            raise HTTPException(
+                status_code=404,
+                detail="Raw replay cache/archive is unavailable for this file",
+            )
+        media_type = "application/x-slippi-replay"
+        return FileResponse(path=cached, filename=cached.name, media_type=media_type)
+
+    media_type = "application/octet-stream"
+    if candidate.suffix.lower() == ".slp":
+        media_type = "application/x-slippi-replay"
+    elif candidate.suffix.lower() == ".zlp":
+        media_type = "application/x-slippi-replay"
+
+    return FileResponse(path=candidate, filename=file_row.name, media_type=media_type)
+
+
 @router.get("/filters")
 def list_replay_filters(db: Session = Depends(get_db)) -> dict[str, list[str]]:
     folders = db.scalars(select(File.folder).distinct()).all()
-    collection_names = db.scalars(select(ApiToken.collection_name).distinct()).all()
+    source_names = db.scalars(select(ApiToken.source_name).distinct()).all()
+    public_repository_names = db.scalars(
+        select(Repository.name).where(Repository.is_public.is_(True)).distinct()
+    ).all()
+    tournament_names = db.scalars(
+        select(func.coalesce(TournamentSeries.current_tournament_name, TournamentSeries.name))
+        .join(Repository, Repository.id == TournamentSeries.repository_id)
+        .where(Repository.is_public.is_(True))
+        .distinct()
+    ).all()
 
-    repositories: set[str] = set()
-    collections = {name for name in collection_names if name}
+    repositories: set[str] = {name for name in public_repository_names if name}
+    sources = {name for name in source_names if name}
 
     for folder in folders:
         repository, collection = _extract_repo_collection(folder)
         if repository:
             repositories.add(repository)
-        # Keep parsed collection as fallback for non-token historical imports.
+        # Keep parsed source as fallback for non-token historical imports.
         if collection:
-            collections.add(collection)
+            sources.add(collection)
 
     return {
         "repositories": sorted(repositories),
-        "collections": sorted(collections),
+        "tournaments": sorted({name for name in tournament_names if name}),
+        "sources": sorted(sources),
+        # Backward compatibility for clients still using collection naming.
+        "collections": sorted(sources),
     }
 
 
@@ -177,6 +238,8 @@ def list_files(
     min_rank: int | None = Query(None),
     max_rank: int | None = Query(None),
     repository: str | None = Query(None),
+    tournament: str | None = Query(None),
+    source: str | None = Query(None),
     collection: str | None = Query(None),
 ) -> ReplayFileListResponse:
     player_one = aliased(Player)
@@ -271,9 +334,23 @@ def list_files(
         )
 
     repository_values = _parse_csv_values(repository)
+    tournament_values = _parse_csv_values(tournament)
+    if tournament_values:
+        tournament_repo_names = db.scalars(
+            select(Repository.name)
+            .select_from(TournamentSeries)
+            .join(Repository, Repository.id == TournamentSeries.repository_id)
+            .where(func.coalesce(TournamentSeries.current_tournament_name, TournamentSeries.name).in_(tournament_values))
+        ).all()
+
+        if not tournament_repo_names:
+            conditions.append(false())
+        else:
+            repository_values.extend(tournament_repo_names)
+
     if repository_values:
         repo_clauses = []
-        for repo_name in repository_values:
+        for repo_name in list(dict.fromkeys(repository_values)):
             repo_clauses.extend(
                 [
                     File.folder == repo_name,
@@ -283,19 +360,21 @@ def list_files(
             )
         conditions.append(or_(*repo_clauses))
 
-    collection_values = _parse_csv_values(collection)
-    if collection_values:
-        collection_clauses = []
-        for collection_name in collection_values:
-            collection_clauses.extend(
+    source_values = _parse_csv_values(source)
+    if not source_values:
+        source_values = _parse_csv_values(collection)
+    if source_values:
+        source_clauses = []
+        for source_name in source_values:
+            source_clauses.extend(
                 [
-                    File.folder == collection_name,
-                    File.folder.ilike(f"{collection_name}/%"),
-                    File.folder.ilike(f"%/{collection_name}"),
-                    File.folder.ilike(f"%/{collection_name}/%"),
+                    File.folder == source_name,
+                    File.folder.ilike(f"{source_name}/%"),
+                    File.folder.ilike(f"%/{source_name}"),
+                    File.folder.ilike(f"%/{source_name}/%"),
                 ]
             )
-        conditions.append(or_(*collection_clauses))
+        conditions.append(or_(*source_clauses))
 
     rank_values = _parse_csv_values(rank)[:2]
 
@@ -314,6 +393,7 @@ def list_files(
             File._id.label("file_id"),
             File.folder.label("folder"),
             File.name.label("name"),
+            File.tournament_name.label("tournament_name"),
             File.size_bytes.label("size_bytes"),
             File.birth_time.label("birth_time"),
             func.coalesce(player_one.display_name, player_one.tag, player_one.connect_code).label("player_1"),
@@ -342,6 +422,94 @@ def list_files(
 
     details_by_id = {row.file_id: row for row in details}
 
+    repo_source_pairs = {
+        (_extract_repo_collection(row.folder)[0], _extract_repo_collection(row.folder)[1])
+        for row in details
+    }
+    repo_names = {repo for repo, _ in repo_source_pairs if repo}
+    source_names = {source for _, source in repo_source_pairs if source}
+
+    resolved_tournament_by_repo_source: dict[tuple[str, str], str] = {}
+    resolved_tournament_by_repo: dict[str, str] = {}
+    if repo_names:
+        tournament_rows = db.execute(
+            select(
+                TournamentSeries.id,
+                Repository.name,
+                TournamentSeries.name,
+                TournamentSeries.current_tournament_name,
+                TournamentSeries.current_tournament_name_fetched_at,
+                TournamentSeries.provider,
+                TournamentSeries.slug,
+                ApiToken.source_name,
+            )
+            .select_from(TournamentSeries)
+            .join(Repository, Repository.id == TournamentSeries.repository_id)
+            .outerjoin(TournamentSource, TournamentSource.tournament_id == TournamentSeries.id)
+            .outerjoin(ApiToken, ApiToken.id == TournamentSource.token_id)
+            .where(Repository.name.in_(repo_names))
+        ).all()
+
+        resolved_name_by_series_id: dict[int, str] = {}
+        pending_series_updates: dict[int, tuple[str | None, object | None]] = {}
+        for (
+            series_id,
+            _repo_name,
+            series_name,
+            current_tournament_name,
+            current_tournament_name_fetched_at,
+            provider,
+            slug,
+            _source_name,
+        ) in tournament_rows:
+            if series_id in resolved_name_by_series_id:
+                continue
+
+            resolved_name = current_tournament_name
+            resolved_fetched_at = current_tournament_name_fetched_at
+            if provider and slug:
+                fetched_name, fetched_at = resolve_tournament_name(
+                    provider,
+                    slug,
+                    cached_name=current_tournament_name,
+                    cached_at=current_tournament_name_fetched_at,
+                    force_refresh=False,
+                )
+                resolved_name = fetched_name or resolved_name
+                resolved_fetched_at = fetched_at or resolved_fetched_at
+
+            # Persist refreshed values so the 24h tournament-name cache is reused.
+            if (
+                resolved_name != current_tournament_name
+                or resolved_fetched_at != current_tournament_name_fetched_at
+            ):
+                pending_series_updates[series_id] = (resolved_name, resolved_fetched_at)
+
+            resolved_name_by_series_id[series_id] = resolved_name or series_name
+
+        if pending_series_updates:
+            for series_id, (resolved_name, resolved_fetched_at) in pending_series_updates.items():
+                db.execute(
+                    update(TournamentSeries)
+                    .where(TournamentSeries.id == series_id)
+                    .values(
+                        current_tournament_name=resolved_name,
+                        current_tournament_name_fetched_at=resolved_fetched_at,
+                    )
+                )
+            db.commit()
+
+        for series_id, repo_name, _series_name, _current_name, _current_at, _provider, _slug, source_name in tournament_rows:
+            resolved_name = resolved_name_by_series_id.get(series_id)
+            if not repo_name or not resolved_name:
+                continue
+
+            if repo_name not in resolved_tournament_by_repo:
+                resolved_tournament_by_repo[repo_name] = resolved_name
+
+            if source_name and source_name in source_names:
+                resolved_tournament_by_repo_source[(repo_name, source_name)] = resolved_name
+
     connect_codes = set()
     for row in details:
         if row.player_1_connect_code:
@@ -357,9 +525,10 @@ def list_files(
         if row is None:
             items.append(
                 ReplayFilePublic(
-                    _id=file_id,
+                    id=file_id,
                     folder="",
                     name="",
+                    resolved_tournament_name=None,
                     size_bytes=0,
                     birth_time=None,
                     player_1=None,
@@ -386,11 +555,23 @@ def list_files(
         if not _matches_rating_filter(min_rank, max_rank, player_one_rating, player_two_rating):
             continue
 
+        repository_name, source_name = _extract_repo_collection(row.folder)
+        resolved_tournament_name = row.tournament_name
+        if repository_name and source_name:
+            resolved_tournament_name = (
+                resolved_tournament_name
+                or resolved_tournament_by_repo_source.get((repository_name, source_name))
+            )
+        if not resolved_tournament_name and repository_name:
+            resolved_tournament_name = resolved_tournament_by_repo.get(repository_name)
+
         items.append(
             ReplayFilePublic(
-                _id=row.file_id,
+                id=row.file_id,
                 folder=row.folder,
                 name=row.name,
+                source_name=source_name,
+                resolved_tournament_name=resolved_tournament_name,
                 size_bytes=row.size_bytes,
                 birth_time=row.birth_time,
                 player_1=row.player_1,
@@ -426,4 +607,178 @@ def list_files(
     return ReplayFileListResponse(
         items=items,
         next_cursor=next_cursor,
+    )
+
+
+@router.get("/stream/tournaments", response_model=list[TournamentSeriesPublic])
+def list_stream_tournaments(db: Session = Depends(get_db)) -> list[TournamentSeriesPublic]:
+    tournaments = db.scalars(select(TournamentSeries).order_by(TournamentSeries.name.asc())).all()
+    return [TournamentSeriesPublic.model_validate(tournament) for tournament in tournaments]
+
+
+@router.get("/stream/status", response_model=StreamStatusResponse)
+def get_stream_status(
+    db: Session = Depends(get_db),
+    tournament_id: int | None = Query(None),
+) -> StreamStatusResponse:
+    tournament = None
+    source_names: set[str] | None = None
+    if tournament_id is not None:
+        tournament = db.get(TournamentSeries, tournament_id)
+        if not tournament:
+            return StreamStatusResponse(tournament=None, sources=[], events=[])
+        source_names = {token.source_name for token in tournament.sources}
+
+    snapshot = get_stream_status_snapshot(source_names)
+
+    repository_names: set[str] = set()
+    source_names_in_snapshot: set[str] = set()
+    for source_row in snapshot["sources"]:
+        source_name = source_row.get("source_name")
+        if source_name:
+            source_names_in_snapshot.add(source_name)
+        for repository_name in source_row.get("repositories") or []:
+            if repository_name:
+                repository_names.add(repository_name)
+
+    for event_row in snapshot["events"]:
+        source_name = event_row.get("source_name")
+        if source_name:
+            source_names_in_snapshot.add(source_name)
+        repository_name = event_row.get("repository")
+        if repository_name:
+            repository_names.add(repository_name)
+
+    resolved_tournament_by_repo_source: dict[tuple[str, str], str] = {}
+    resolved_tournament_by_repo: dict[str, str] = {}
+    if repository_names:
+        tournament_rows = db.execute(
+            select(
+                TournamentSeries.id,
+                Repository.name,
+                TournamentSeries.name,
+                TournamentSeries.current_tournament_name,
+                TournamentSeries.current_tournament_name_fetched_at,
+                TournamentSeries.provider,
+                TournamentSeries.slug,
+                ApiToken.source_name,
+            )
+            .select_from(TournamentSeries)
+            .join(Repository, Repository.id == TournamentSeries.repository_id)
+            .outerjoin(TournamentSource, TournamentSource.tournament_id == TournamentSeries.id)
+            .outerjoin(ApiToken, ApiToken.id == TournamentSource.token_id)
+            .where(Repository.name.in_(repository_names))
+        ).all()
+
+        resolved_name_by_series_id: dict[int, str] = {}
+        pending_series_updates: dict[int, tuple[str | None, object | None]] = {}
+        for (
+            series_id,
+            _repo_name,
+            series_name,
+            current_tournament_name,
+            current_tournament_name_fetched_at,
+            provider,
+            slug,
+            _source_name,
+        ) in tournament_rows:
+            if series_id in resolved_name_by_series_id:
+                continue
+
+            resolved_name = current_tournament_name
+            resolved_fetched_at = current_tournament_name_fetched_at
+            if provider and slug:
+                fetched_name, fetched_at = resolve_tournament_name(
+                    provider,
+                    slug,
+                    cached_name=current_tournament_name,
+                    cached_at=current_tournament_name_fetched_at,
+                    force_refresh=False,
+                )
+                resolved_name = fetched_name or resolved_name
+                resolved_fetched_at = fetched_at or resolved_fetched_at
+
+            if (
+                resolved_name != current_tournament_name
+                or resolved_fetched_at != current_tournament_name_fetched_at
+            ):
+                pending_series_updates[series_id] = (resolved_name, resolved_fetched_at)
+
+            resolved_name_by_series_id[series_id] = resolved_name or series_name
+
+        if pending_series_updates:
+            for series_id, (resolved_name, resolved_fetched_at) in pending_series_updates.items():
+                db.execute(
+                    update(TournamentSeries)
+                    .where(TournamentSeries.id == series_id)
+                    .values(
+                        current_tournament_name=resolved_name,
+                        current_tournament_name_fetched_at=resolved_fetched_at,
+                    )
+                )
+            db.commit()
+
+        for (
+            series_id,
+            repository_name,
+            _series_name,
+            _current_name,
+            _current_at,
+            _provider,
+            _slug,
+            source_name,
+        ) in tournament_rows:
+            resolved_name = resolved_name_by_series_id.get(series_id)
+            if not repository_name or not resolved_name:
+                continue
+
+            if repository_name not in resolved_tournament_by_repo:
+                resolved_tournament_by_repo[repository_name] = resolved_name
+
+            if source_name and source_name in source_names_in_snapshot:
+                resolved_tournament_by_repo_source[(repository_name, source_name)] = resolved_name
+
+    connect_codes: set[str] = set()
+    for source_row in snapshot["sources"]:
+        for preview in source_row.get("player_preview") or []:
+            code = preview.get("slippi_code")
+            if code:
+                connect_codes.add(code)
+
+    profile_by_code = {code: fetch_profile_by_connect_code(code) for code in connect_codes}
+
+    for source_row in snapshot["sources"]:
+        enriched_preview = []
+        for preview in source_row.get("player_preview") or []:
+            row = dict(preview)
+            profile = profile_by_code.get(row.get("slippi_code"))
+            row["rank"] = profile.rank if profile else None
+            row["rating"] = profile.rating if profile else None
+            enriched_preview.append(row)
+        source_row["player_preview"] = enriched_preview
+
+        source_name = source_row.get("source_name")
+        repositories = source_row.get("repositories") or []
+        resolved_name = None
+        for repository_name in repositories:
+            resolved_name = (
+                resolved_tournament_by_repo_source.get((repository_name, source_name))
+                or resolved_tournament_by_repo.get(repository_name)
+            )
+            if resolved_name:
+                break
+        source_row["resolved_tournament_name"] = resolved_name
+
+    for event_row in snapshot["events"]:
+        source_name = event_row.get("source_name")
+        repository_name = event_row.get("repository")
+        event_row["resolved_tournament_name"] = (
+            resolved_tournament_by_repo_source.get((repository_name, source_name))
+            or resolved_tournament_by_repo.get(repository_name)
+        )
+
+    return StreamStatusResponse(
+        tournament=TournamentSeriesPublic.model_validate(tournament) if tournament else None,
+        sources=snapshot["sources"],
+        events=snapshot["events"],
     )

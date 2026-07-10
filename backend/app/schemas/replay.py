@@ -13,9 +13,11 @@ class ReplayPlayerPublic(BaseModel):
 
 
 class ReplayFilePublic(BaseModel):
-    _id: int
+    id: int
     folder: str
     name: str
+    source_name: str | None = None
+    resolved_tournament_name: str | None = None
     size_bytes: int
     birth_time: str | None
     player_1: str | None

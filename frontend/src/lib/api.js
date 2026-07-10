@@ -136,6 +136,8 @@ export async function fetchReplayFiles(params = {}) {
   if (params.max_rank) search.set("max_rank", params.max_rank);
   if (params.player) search.set("player", params.player);
   if (params.repository) search.set("repository", params.repository);
+  if (params.tournament) search.set("tournament", params.tournament);
+  if (params.source) search.set("source", params.source);
   if (params.collection) search.set("collection", params.collection);
 
   const url = `${API_BASE}/replays/files${search.toString() ? `?${search.toString()}` : ""}`;
@@ -148,6 +150,27 @@ export async function fetchReplayFiles(params = {}) {
 
 export async function fetchReplayFilterOptions() {
   const res = await fetch(`${API_BASE}/replays/filters`);
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function listStreamTournaments() {
+  const res = await fetch(`${API_BASE}/replays/stream/tournaments`);
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function fetchStreamStatus(tournamentId) {
+  const search = new URLSearchParams();
+  if (tournamentId) {
+    search.set("tournament_id", String(tournamentId));
+  }
+  const url = `${API_BASE}/replays/stream/status${search.toString() ? `?${search.toString()}` : ""}`;
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(await extractError(res));
   }
@@ -169,6 +192,72 @@ export async function createMyApiToken(payload) {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function listSources() {
+  const res = await fetch(`${API_BASE}/users/sources`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function listTournaments() {
+  const res = await fetch(`${API_BASE}/users/tournaments`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function createTournament(payload) {
+  const res = await fetch(`${API_BASE}/users/tournaments`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function updateTournament(tournamentId, payload) {
+  const res = await fetch(`${API_BASE}/users/tournaments/${tournamentId}`, {
+    method: "PATCH",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function getTournamentSourceIds(tournamentId) {
+  const res = await fetch(`${API_BASE}/users/tournaments/${tournamentId}/sources`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function updateTournamentSources(tournamentId, sourceIds) {
+  const res = await fetch(`${API_BASE}/users/tournaments/${tournamentId}/sources`, {
+    method: "PUT",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ source_ids: sourceIds }),
   });
   if (!res.ok) {
     throw new Error(await extractError(res));

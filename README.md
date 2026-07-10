@@ -87,6 +87,62 @@ Set these values in `.env` to automatically create/update a superuser on backend
 - `SUPERUSER_EMAIL`
 - `SUPERUSER_PASSWORD`
 
+## Bracket Provider Tokens
+
+Tournament slug resolution can use API tokens from environment variables:
+
+- `START_GG_TOKEN`
+- `PARRY_GG_TOKEN`
+
+Set these in `.env` to enable authenticated provider lookups.
+
+## SlippiLab Viewer Integration
+
+This repo includes SlippiLab as a git submodule at `slippilab`.
+
+Initialize and update submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+Run SlippiLab locally (optional, for embedded viewer tab):
+
+```bash
+docker compose up slippilab
+```
+
+Configure frontend viewer URL with:
+
+- `VITE_SLIPPILAB_URL` (default: `http://localhost:4173`)
+
+Replay table rows include a `View` action that opens SlippiLab in a new tab and passes the replay download URL via `replayUrl`.
+
+## FTP Custom Metadata Command
+
+The FTP server supports a custom `SITE SLPMETA` command to override parsed replay metadata for subsequent uploads in the same FTP session.
+
+Example:
+
+```text
+SITE SLPMETA {"stage":31,"players":[{"port":1,"display_name":"Mango","slippi_code":"MANGO#001","startgg_id":"123","parrygg_id":"abc","character":2},{"port":2,"display_name":"Zain","slippi_code":"ZAIN#001","startgg_id":"456","parrygg_id":"def","character":9}]}
+```
+
+Supported player fields:
+
+- `port` (required, 1-4)
+- `display_name`
+- `slippi_code`
+- `startgg_id`
+- `parrygg_id`
+- `character` (character id)
+
+Clear the override with:
+
+```text
+SITE CLEARSLPMETA
+```
+
 ## Notes
 
 - On backend container start, migrations run automatically via `alembic upgrade head`.

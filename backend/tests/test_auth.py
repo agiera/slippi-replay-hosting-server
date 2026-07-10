@@ -10,6 +10,7 @@ from app.models.player import Player
 from app.models.repository import Repository
 from app.models.user import User
 from app.services.peppi_ingest import ParsedReplayData
+from app.services.replay_upload import persist_replay_upload
 from sqlalchemy import select
 
 
@@ -658,6 +659,149 @@ def test_upload_endpoint_falls_back_when_peppi_parse_fails(client, db_session, t
     assert game is None
 
 
+def test_persist_replay_upload_prefers_parsed_replay_data_over_metadata_override(db_session, tmp_path, monkeypatch):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+    token_row = db_session.scalar(select(ApiToken).where(ApiToken.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()))
+    assert token_row is not None
+
+    fake_parsed = ParsedReplayData(
+        stage=31,
+        start_time="2024-03-02T18:20:00Z",
+        last_frame=9000,
+        is_teams=0,
+        players=[
+            {
+                "port": 1,
+                "type": 0,
+                "character_id": 2,
+                "connect_code": "MANGO#001",
+                "display_name": "Mango",
+                "tag": "Mang0",
+                "user_id": "uid-mango",
+            },
+            {
+                "port": 2,
+                "type": 0,
+                "character_id": 18,
+                "connect_code": "ZAIN#001",
+                "display_name": "Zain",
+                "tag": "Zain",
+                "user_id": "uid-zain",
+            },
+        ],
+        peppi_bytes=b"COMPRESSED-PEPPI",
+    )
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        row = persist_replay_upload(
+            db_session,
+            token_row=token_row,
+            repository_name="public",
+            original_name="parsed.slp",
+            data=b"SLP-DATA",
+            metadata_override={
+                "stage": 3,
+                "players": [
+                    {
+                        "port": 1,
+                        "display_name": "Command Name",
+                        "tag": "CMD1",
+                        "slippi_code": "CMD#001",
+                        "character": 20,
+                        "startgg_id": "command-startgg",
+                    },
+                    {
+                        "port": 2,
+                        "display_name": "",
+                        "tag": "",
+                        "slippi_code": "",
+                        "character": 19,
+                    },
+                ],
+            },
+            parse_replay=lambda *_args, **_kwargs: fake_parsed,
+        )
+        db_session.commit()
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+    game = db_session.scalar(select(Game).where(Game.file_id == row._id))
+    assert game is not None
+    assert game.stage == 31
+
+    players = db_session.scalars(select(Player).where(Player.game_id == game._id).order_by(Player.port)).all()
+    assert len(players) == 2
+    assert players[0].display_name == "Mango"
+    assert players[0].tag == "Mang0"
+    assert players[0].connect_code == "MANGO#001"
+    assert players[0].character_id == 2
+    assert players[0].startgg_id == "command-startgg"
+    assert players[1].display_name == "Zain"
+    assert players[1].connect_code == "ZAIN#001"
+    assert players[1].character_id == 18
+
+
+def test_replay_download_endpoint_returns_uploaded_file(client, db_session, tmp_path):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        upload_res = client.post(
+            "/api/v1/uploads/files",
+            data={"repository": "public"},
+            files={"file": ("viewer_sample.slp", b"SLP-DATA", "application/octet-stream")},
+            headers={"X-API-Token": raw_token},
+        )
+        assert upload_res.status_code == 200
+        payload = upload_res.json()
+
+        download_res = client.get(f"/api/v1/replays/files/{payload['id']}/download")
+        assert download_res.status_code == 200
+        assert download_res.content == b"SLP-DATA"
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+
+def test_replay_download_endpoint_returns_cached_raw_replay_for_peppi_file(client, db_session, tmp_path, monkeypatch):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+
+    fake_parsed = ParsedReplayData(
+        stage=31,
+        start_time="2024-03-02T18:20:00Z",
+        last_frame=1200,
+        is_teams=0,
+        players=[],
+        peppi_bytes=b"COMPRESSED-PEPPI",
+    )
+    monkeypatch.setattr("app.api.v1.uploads.parse_slippi_bytes", lambda *_args, **_kwargs: fake_parsed)
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    original_cache_dir = settings.REPLAY_VIEW_CACHE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path / "storage")
+    settings.REPLAY_VIEW_CACHE_DIR = str(tmp_path / "view-cache")
+    try:
+        raw_bytes = b"RAW-SLP-BYTES"
+        upload_res = client.post(
+            "/api/v1/uploads/files",
+            data={"repository": "public"},
+            files={"file": ("viewer_parse.slp", raw_bytes, "application/octet-stream")},
+            headers={"X-API-Token": raw_token},
+        )
+        assert upload_res.status_code == 200
+        payload = upload_res.json()
+        assert payload["name"].endswith(".peppi.json.gz")
+
+        download_res = client.get(f"/api/v1/replays/files/{payload['id']}/download")
+        assert download_res.status_code == 200
+        assert download_res.content == raw_bytes
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+        settings.REPLAY_VIEW_CACHE_DIR = original_cache_dir
+
+
 def test_superuser_can_create_repository_and_assign_user_membership(client, db_session):
     superuser = User(
         username="repoadmin",
@@ -705,7 +849,7 @@ def test_superuser_can_create_repository_and_assign_user_membership(client, db_s
     assert "team-a" in assigned_names
 
 
-def test_upload_rejects_repository_outside_api_token_scope(client, db_session, tmp_path):
+def test_upload_uses_token_repository_for_single_repo_source(client, db_session, tmp_path):
     public_repo = Repository(name="public", is_public=True)
     private_repo = Repository(name="private-team", is_public=False)
     db_session.add_all([public_repo, private_repo])
@@ -748,7 +892,11 @@ def test_upload_rejects_repository_outside_api_token_scope(client, db_session, t
     finally:
         settings.REPLAY_STORAGE_DIR = original_storage_dir
 
-    assert upload_res.status_code == 403
+    assert upload_res.status_code == 200
+    payload = upload_res.json()
+    stored = db_session.scalar(select(File).where(File._id == payload["id"]))
+    assert stored is not None
+    assert "/public/" in stored.folder
 
 
 def test_collection_name_must_be_globally_unique(client, db_session):
