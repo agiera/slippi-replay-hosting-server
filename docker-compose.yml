@@ -19,6 +19,7 @@ services:
   backend:
     build:
       context: ./backend
+    image: slippi-replay-hosting-server-backend
     depends_on:
       db:
         condition: service_healthy
@@ -29,8 +30,8 @@ services:
       REPLAY_VIEW_ARCHIVE_DIR: /app/uploads-view-archive
     ports:
       - "8000:8000"
-      - "2121:2121"
-      - "22100-22109:22100-22109"
+      - "${FTP_PORT:-2121}:${FTP_PORT:-2121}"
+      - "${FTP_PASSIVE_PORTS:-22100-22199}:${FTP_PASSIVE_PORTS:-22100-22199}"
     volumes:
       - ./backend:/app
       - ./uploads:/app/uploads
@@ -41,26 +42,28 @@ services:
   frontend:
     build:
       context: ./frontend
+    image: slippi-replay-hosting-server-frontend
     depends_on:
       - backend
     environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+      VITE_DEV_PROXY_TARGET: ${VITE_DEV_PROXY_TARGET:-http://backend:8000}
     ports:
       - "5173:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
 
-  slippilab:
-    image: node:20-alpine
-    working_dir: /app
-    command: >
-      sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 4173"
-    ports:
-      - "4173:4173"
-    volumes:
-      - ./slippilab:/app
-      - /app/node_modules
+  # slippilab:
+  #   image: node:20-alpine
+  #   working_dir: /app
+  #   command: >
+  #     sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 4173"
+  #   ports:
+  #     - "4173:4173"
+  #   volumes:
+  #     - ./slippilab:/app
+  #     - /app/node_modules
 
 volumes:
   pg_data:

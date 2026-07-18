@@ -9,10 +9,17 @@ from app.models.repository import Repository
 from app.models.source_metadata import SourceMetadata
 from app.models.user import User
 from app.services.ftp_server import (
+    _record_stream_event,
+    _set_source_connection_state,
+    _set_source_player_preview,
     _authenticate_ftp_credentials,
     _clear_source_metadata_override,
     _decode_site_slpmeta_ubjson,
+    get_stream_events_since,
+    _is_parsed_slippi_filename,
     _load_source_metadata_override,
+    _source_connections,
+    _stream_state_lock,
     _store_source_metadata_override,
 )
 
@@ -173,3 +180,90 @@ def test_source_metadata_override_round_trip(db_session, testing_session_local):
 
     _clear_source_metadata_override("test-source", session_factory=testing_session_local)
     assert db_session.scalar(select(SourceMetadata).where(SourceMetadata.source_name == "test-source")) is None
+
+
+def test_stream_preview_merges_controller_and_slippi_metadata():
+    source_name = "merge-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    _set_source_player_preview(
+        source_name,
+        [
+            {
+                "port": 0,
+                "display_name": "Controller Name",
+                "tag": "CTRL",
+                "firmware": "1.2.3",
+            }
+        ],
+    )
+    _set_source_player_preview(
+        source_name,
+        [
+            {
+                "port": 0,
+                "slippi_code": "CTRL#001",
+            }
+        ],
+        stage=31,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    assert state["stage_preview"] == 31
+    assert len(state["player_preview"]) == 1
+    merged = state["player_preview"][0]
+    assert merged["port"] == 1
+    assert merged["display_name"] == "Controller Name"
+    assert merged["tag"] == "CTRL"
+    assert merged["firmware"] == "1.2.3"
+    assert merged["slippi_code"] == "CTRL#001"
+
+
+def test_stream_phase_marks_ended_as_completion():
+    source_name = "phase-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    _record_stream_event(source_name, "ftpuser", "public", "", "started")
+    _record_stream_event(source_name, "ftpuser", "public", "a.slp", "controller_metadata")
+    _record_stream_event(source_name, "ftpuser", "public", "a.slp", "slippi_file_metadata")
+    _record_stream_event(source_name, "ftpuser", "public", "a.slp", "ended")
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    assert state["stream_phase"] == "ended"
+    assert state["last_completed_at"] is not None
+
+
+def test_parsed_slippi_filename_helper():
+    assert _is_parsed_slippi_filename("abc.peppi.json.gz") is True
+    assert _is_parsed_slippi_filename("abc.slp") is False
+
+
+def test_get_stream_events_since_returns_incremental_ordered_events():
+    source_name = "events-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    _record_stream_event(source_name, "ftpuser", "public", "", "started")
+    _record_stream_event(source_name, "ftpuser", "public", "a.meta.json", "controller_metadata")
+    _record_stream_event(source_name, "ftpuser", "public", "a.slp", "ended")
+
+    all_events = get_stream_events_since(0, {source_name})
+    assert len(all_events) >= 3
+    assert [event["status"] for event in all_events[-3:]] == ["started", "controller_metadata", "ended"]
+
+    first_cursor = int(all_events[-2]["event_id"])
+    tail_events = get_stream_events_since(first_cursor, {source_name})
+    assert len(tail_events) >= 1
+    assert tail_events[-1]["status"] == "ended"

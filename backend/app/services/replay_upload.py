@@ -14,7 +14,8 @@ from app.models.game import Game
 from app.models.player import Player
 from app.models.repository import Repository
 from app.models.tournament_series import TournamentSeries
-from app.services.peppi_ingest import parse_slippi_bytes
+from app.services.peppi_ingest import parse_slippi_bytes, parse_slippi_stage_partial
+from app.services.slippi_profile import fetch_profile_by_connect_code
 from app.services.tournament_slug import resolve_tournament_name
 from app.services.view_cache import archive_view_replay_bytes, cache_view_replay_bytes, prune_view_cache
 
@@ -86,21 +87,128 @@ def _build_storage_name(
     return f"{timestamp}_{p1}_vs_{p2}_{stage}_{content_hash}{suffix}"
 
 
-def _normalize_player_overrides(player_overrides: list[dict] | None) -> dict[int, dict]:
+def _coerce_port_from_field(raw_port: object) -> int | None:
+    try:
+        parsed = int(raw_port)
+    except (TypeError, ValueError):
+        return None
+
+    if 1 <= parsed <= 4:
+        return parsed
+    if 0 <= parsed <= 3:
+        return parsed + 1
+    return None
+
+
+def _coerce_port_from_hint(raw_port: object) -> int | None:
+    try:
+        parsed = int(raw_port)
+    except (TypeError, ValueError):
+        return None
+
+    if 0 <= parsed <= 3:
+        return parsed + 1
+    if 1 <= parsed <= 4:
+        return parsed
+    return None
+
+
+def _infer_override_port(player: dict, *, key_hint: object | None, list_index: int | None) -> int | None:
+    for field in ("port", "player_port", "playerPort", "player_index", "playerIndex"):
+        port = _coerce_port_from_field(player.get(field))
+        if port is not None:
+            return port
+
+    if key_hint is not None:
+        port = _coerce_port_from_hint(key_hint)
+        if port is not None:
+            return port
+
+    if list_index is not None:
+        return _coerce_port_from_hint(list_index)
+
+    return None
+
+
+def _normalize_player_overrides(player_overrides: list[dict] | dict | None) -> dict[int, dict]:
     if not player_overrides:
         return {}
 
+    if isinstance(player_overrides, dict):
+        entries = [(key, value, None) for key, value in player_overrides.items()]
+    elif isinstance(player_overrides, list):
+        entries = [(None, value, index) for index, value in enumerate(player_overrides)]
+    else:
+        return {}
+
     by_port: dict[int, dict] = {}
-    for player in player_overrides:
-        try:
-            port = int(player.get("port"))
-        except (TypeError, ValueError):
+    for key_hint, player, list_index in entries:
+        if not isinstance(player, dict):
             continue
-        if port < 1 or port > 4:
+        port = _infer_override_port(player, key_hint=key_hint, list_index=list_index)
+        if port is None:
             continue
         by_port[port] = player
 
     return by_port
+
+
+def _is_valid_port(port: object) -> bool:
+    try:
+        value = int(port)
+    except (TypeError, ValueError):
+        return False
+    return 1 <= value <= 4
+
+
+def _assign_missing_ports_from_overrides(parsed_replay, player_overrides: dict[int, dict]) -> None:
+    if parsed_replay is None or not player_overrides:
+        return
+
+    used_ports: set[int] = set()
+    missing_players: list[dict] = []
+
+    for player in parsed_replay.players:
+        port = player.get("port")
+        if _is_valid_port(port) and int(port) not in used_ports:
+            used_ports.add(int(port))
+            continue
+        missing_players.append(player)
+
+    available_ports = [port for port in sorted(player_overrides.keys()) if port not in used_ports]
+    for player, inferred_port in zip(missing_players, available_ports):
+        player["port"] = inferred_port
+
+
+def _players_from_metadata_override(metadata_override: dict | None) -> list[dict]:
+    player_overrides = _normalize_player_overrides((metadata_override or {}).get("players"))
+    players: list[dict] = []
+
+    for port in sorted(player_overrides.keys()):
+        override = player_overrides[port]
+        character_id = None
+        if override.get("character") is not None:
+            try:
+                character_id = int(override.get("character"))
+            except (TypeError, ValueError):
+                character_id = None
+
+        players.append(
+            {
+                "port": port,
+                "type": 0,
+                "character_id": character_id,
+                "connect_code": override.get("slippi_code"),
+                "display_name": override.get("display_name"),
+                "tag": override.get("tag"),
+                "user_id": None,
+                "startgg_id": override.get("startgg_id"),
+                "parrygg_id": override.get("parrygg_id"),
+                "is_winner": None,
+            }
+        )
+
+    return players
 
 
 def _apply_replay_metadata_overrides(parsed_replay, metadata_override: dict | None):
@@ -117,6 +225,8 @@ def _apply_replay_metadata_overrides(parsed_replay, metadata_override: dict | No
     player_overrides = _normalize_player_overrides(metadata_override.get("players"))
     if not player_overrides:
         return
+
+    _assign_missing_ports_from_overrides(parsed_replay, player_overrides)
 
     for player in parsed_replay.players:
         port = player.get("port")
@@ -240,6 +350,7 @@ def persist_replay_upload(
         tournament_snapshot_name = resolved_name or series_row.name
 
     parsed_replay = None
+    partial_stage: int | None = None
     storage_bytes = data
     storage_name = original_name
 
@@ -249,6 +360,10 @@ def persist_replay_upload(
         storage_bytes = parsed_replay.peppi_bytes
     except Exception:
         parsed_replay = None
+        try:
+            partial_stage = parse_slippi_stage_partial(data, suffix=Path(original_name).suffix)
+        except Exception:
+            partial_stage = None
 
     replay_start = _parse_start_time(parsed_replay.start_time) if parsed_replay else None
     folder_time = replay_start or now
@@ -281,6 +396,17 @@ def persist_replay_upload(
     db.add(row)
     db.flush()
 
+    profile_cache: dict[str, object | None] = {}
+
+    def _lookup_profile(connect_code: str | None):
+        if not connect_code:
+            return None
+        if connect_code in profile_cache:
+            return profile_cache[connect_code]
+        profile = fetch_profile_by_connect_code(connect_code)
+        profile_cache[connect_code] = profile
+        return profile
+
     if parsed_replay is not None:
         game_row = Game(
             file_id=row._id,
@@ -296,6 +422,7 @@ def persist_replay_upload(
         for player_data in parsed_replay.players:
             if player_data["port"] is None:
                 continue
+            profile = _lookup_profile(player_data.get("connect_code"))
             db.add(
                 Player(
                     game_id=game_row._id,
@@ -309,6 +436,44 @@ def persist_replay_upload(
                     startgg_id=player_data.get("startgg_id"),
                     parrygg_id=player_data.get("parrygg_id"),
                     is_winner=player_data.get("is_winner"),
+                    rank=profile.rank if profile else None,
+                    rating=profile.rating if profile else None,
+                )
+            )
+    else:
+        metadata_players = _players_from_metadata_override(metadata_override)
+        if not metadata_players and partial_stage is None:
+            return row
+
+        # Persist stage/player fallback so rows can still render when full parse fails.
+        game_row = Game(
+            file_id=row._id,
+            is_ranked=0,
+            is_teams=0,
+            stage=partial_stage,
+            start_time=None,
+            last_frame=None,
+        )
+        db.add(game_row)
+        db.flush()
+
+        for player_data in metadata_players:
+            profile = _lookup_profile(player_data.get("connect_code"))
+            db.add(
+                Player(
+                    game_id=game_row._id,
+                    port=player_data["port"],
+                    type=player_data["type"],
+                    character_id=player_data["character_id"],
+                    connect_code=player_data["connect_code"],
+                    display_name=player_data["display_name"],
+                    tag=player_data["tag"],
+                    user_id=player_data["user_id"],
+                    startgg_id=player_data.get("startgg_id"),
+                    parrygg_id=player_data.get("parrygg_id"),
+                    is_winner=player_data.get("is_winner"),
+                    rank=profile.rank if profile else None,
+                    rating=profile.rating if profile else None,
                 )
             )
 

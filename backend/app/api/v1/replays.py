@@ -1,7 +1,10 @@
+import asyncio
+import json
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import String, and_, exists, false, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
@@ -16,7 +19,7 @@ from app.models.tournament_source import TournamentSource
 from app.models.tournament_series import TournamentSeries
 from app.schemas.streaming import StreamStatusResponse, TournamentSeriesPublic
 from app.schemas.replay import ReplayFileListResponse, ReplayFilePublic, ReplayPlayerPublic
-from app.services.ftp_server import get_stream_status_snapshot
+from app.services.ftp_server import get_stream_events_since, get_stream_status_snapshot
 from app.services.slippi_profile import fetch_profile_by_connect_code
 from app.services.tournament_slug import resolve_tournament_name
 from app.services.view_cache import PEPPI_SUFFIX, get_cached_replay_path, prune_view_cache, rebuild_cached_replay_from_archive
@@ -396,21 +399,28 @@ def list_files(
             File.tournament_name.label("tournament_name"),
             File.size_bytes.label("size_bytes"),
             File.birth_time.label("birth_time"),
+            Game._id.label("game_id"),
             func.coalesce(player_one.display_name, player_one.tag, player_one.connect_code).label("player_1"),
             func.coalesce(player_two.display_name, player_two.tag, player_two.connect_code).label("player_2"),
             player_one.character_id.label("player_1_character_id"),
             player_one.character_color.label("player_1_character_color"),
             player_one.port.label("player_1_port"),
+            player_one.type.label("player_1_type"),
             player_one.connect_code.label("player_1_connect_code"),
             player_one.is_winner.label("player_1_is_winner"),
+            player_one.rank.label("player_1_rank"),
+            player_one.rating.label("player_1_rating"),
             player_two.character_id.label("player_2_character_id"),
             player_two.character_color.label("player_2_character_color"),
             player_two.port.label("player_2_port"),
+            player_two.type.label("player_2_type"),
             player_two.connect_code.label("player_2_connect_code"),
             player_two.is_winner.label("player_2_is_winner"),
+            player_two.rank.label("player_2_rank"),
+            player_two.rating.label("player_2_rating"),
             Game.stage.label("stage"),
             Game.last_frame.label("last_frame"),
-            Game.start_time.label("datetime_played"),
+            func.coalesce(Game.start_time, File.birth_time).label("datetime_played"),
         )
         .select_from(File)
         .join(Game, Game.file_id == File._id, isouter=True)
@@ -421,6 +431,30 @@ def list_files(
     ).all()
 
     details_by_id = {row.file_id: row for row in details}
+
+    game_ids = [row.game_id for row in details if row.game_id is not None]
+    players_by_game_id: dict[int, list[object]] = {}
+    if game_ids:
+        player_rows = db.execute(
+            select(
+                Player.game_id.label("game_id"),
+                Player.port.label("port"),
+                Player.type.label("type"),
+                Player.character_id.label("character_id"),
+                Player.character_color.label("character_color"),
+                Player.display_name.label("display_name"),
+                Player.tag.label("tag"),
+                Player.connect_code.label("connect_code"),
+                Player.is_winner.label("is_winner"),
+                Player.rank.label("rank"),
+                Player.rating.label("rating"),
+            )
+            .where(Player.game_id.in_(game_ids))
+            .order_by(Player.game_id.asc(), Player.port.asc())
+        ).all()
+
+        for player_row in player_rows:
+            players_by_game_id.setdefault(player_row.game_id, []).append(player_row)
 
     repo_source_pairs = {
         (_extract_repo_collection(row.folder)[0], _extract_repo_collection(row.folder)[1])
@@ -510,14 +544,17 @@ def list_files(
             if source_name and source_name in source_names:
                 resolved_tournament_by_repo_source[(repo_name, source_name)] = resolved_name
 
-    connect_codes = set()
-    for row in details:
-        if row.player_1_connect_code:
-            connect_codes.add(row.player_1_connect_code)
-        if row.player_2_connect_code:
-            connect_codes.add(row.player_2_connect_code)
+    should_enrich_profiles = True
+    profile_by_code = {}
+    if should_enrich_profiles:
+        connect_codes = set()
+        for row in details:
+            if row.player_1_connect_code:
+                connect_codes.add(row.player_1_connect_code)
+            if row.player_2_connect_code:
+                connect_codes.add(row.player_2_connect_code)
 
-    profile_by_code = {code: fetch_profile_by_connect_code(code) for code in connect_codes}
+        profile_by_code = {code: fetch_profile_by_connect_code(code) for code in connect_codes}
 
     items = []
     for file_id in file_ids:
@@ -545,15 +582,37 @@ def list_files(
         duration_seconds = row.last_frame // 60 if row.last_frame is not None else None
         player_one_profile = profile_by_code.get(row.player_1_connect_code)
         player_two_profile = profile_by_code.get(row.player_2_connect_code)
-        player_one_rank = player_one_profile.rank if player_one_profile else None
-        player_two_rank = player_two_profile.rank if player_two_profile else None
-        player_one_rating = player_one_profile.rating if player_one_profile else None
-        player_two_rating = player_two_profile.rating if player_two_profile else None
+        player_one_rank = row.player_1_rank or (player_one_profile.rank if player_one_profile else None)
+        player_two_rank = row.player_2_rank or (player_two_profile.rank if player_two_profile else None)
+        player_one_rating = row.player_1_rating if row.player_1_rating is not None else (player_one_profile.rating if player_one_profile else None)
+        player_two_rating = row.player_2_rating if row.player_2_rating is not None else (player_two_profile.rating if player_two_profile else None)
 
         if not _matches_rank_filter(rank_values, player_one_rank, player_two_rank):
             continue
         if not _matches_rating_filter(min_rank, max_rank, player_one_rating, player_two_rating):
             continue
+
+        normalized_players: list[ReplayPlayerPublic] = []
+        for player_row in players_by_game_id.get(row.game_id, []):
+            profile = profile_by_code.get(player_row.connect_code)
+            rank_value = player_row.rank or (profile.rank if profile else None)
+            rating_value = player_row.rating if player_row.rating is not None else (profile.rating if profile else None)
+            name_value = player_row.display_name or player_row.tag or player_row.connect_code
+
+            normalized_players.append(
+                ReplayPlayerPublic(
+                    name=name_value,
+                    connect_code=player_row.connect_code,
+                    character_id=player_row.character_id,
+                    character_color=player_row.character_color,
+                    port=player_row.port,
+                    type=player_row.type,
+                    is_cpu=player_row.type == 1,
+                    is_winner=player_row.is_winner,
+                    rank=rank_value,
+                    rating=rating_value,
+                )
+            )
 
         repository_name, source_name = _extract_repo_collection(row.folder)
         resolved_tournament_name = row.tournament_name
@@ -582,6 +641,8 @@ def list_files(
                     character_id=row.player_1_character_id,
                     character_color=row.player_1_character_color,
                     port=row.player_1_port,
+                    type=row.player_1_type,
+                    is_cpu=row.player_1_type == 1,
                     is_winner=row.player_1_is_winner,
                     rank=player_one_rank,
                     rating=player_one_rating,
@@ -592,10 +653,13 @@ def list_files(
                     character_id=row.player_2_character_id,
                     character_color=row.player_2_character_color,
                     port=row.player_2_port,
+                    type=row.player_2_type,
+                    is_cpu=row.player_2_type == 1,
                     is_winner=row.player_2_is_winner,
                     rank=player_two_rank,
                     rating=player_two_rating,
                 ),
+                players=normalized_players,
                 stage=row.stage,
                 game_duration=duration_seconds,
                 datetime_played=row.datetime_played,
@@ -614,6 +678,76 @@ def list_files(
 def list_stream_tournaments(db: Session = Depends(get_db)) -> list[TournamentSeriesPublic]:
     tournaments = db.scalars(select(TournamentSeries).order_by(TournamentSeries.name.asc())).all()
     return [TournamentSeriesPublic.model_validate(tournament) for tournament in tournaments]
+
+
+@router.get("/stream/events")
+async def stream_events(
+    request: Request,
+    db: Session = Depends(get_db),
+    tournament_id: int | None = Query(None),
+):
+    tournament = None
+    source_names: set[str] | None = None
+    if tournament_id is not None:
+        tournament = db.get(TournamentSeries, tournament_id)
+        if not tournament:
+            async def empty_stream():
+                yield "event: snapshot\ndata: {\"tournament\": null, \"sources\": [], \"events\": []}\n\n"
+
+            return StreamingResponse(empty_stream(), media_type="text/event-stream")
+        source_names = {token.source_name for token in tournament.sources}
+
+    try:
+        cursor = int(request.headers.get("last-event-id", "0") or "0")
+    except ValueError:
+        cursor = 0
+
+    snapshot = get_stream_status_snapshot(source_names)
+    payload = {
+        "tournament": TournamentSeriesPublic.model_validate(tournament).model_dump() if tournament else None,
+        "sources": jsonable_encoder(snapshot["sources"]),
+        "events": jsonable_encoder(snapshot["events"]),
+    }
+
+    max_event_id = max((int(event.get("event_id", 0)) for event in snapshot["events"]), default=0)
+    cursor = max(cursor, max_event_id)
+
+    async def event_stream():
+        nonlocal cursor
+
+        yield f"event: snapshot\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+        heartbeat_counter = 0
+        while True:
+            if await request.is_disconnected():
+                break
+
+            emitted = False
+            for event_row in get_stream_events_since(cursor, source_names):
+                encoded = json.dumps(jsonable_encoder(event_row), separators=(",", ":"))
+                event_id = int(event_row.get("event_id", 0))
+                if event_id <= cursor:
+                    continue
+                cursor = event_id
+                emitted = True
+                yield f"id: {event_id}\nevent: stream_event\ndata: {encoded}\n\n"
+
+            heartbeat_counter += 1
+            if not emitted and heartbeat_counter >= 15:
+                heartbeat_counter = 0
+                yield f"event: heartbeat\ndata: {{\"cursor\":{cursor}}}\n\n"
+
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/stream/status", response_model=StreamStatusResponse)
@@ -738,14 +872,8 @@ def get_stream_status(
             if source_name and source_name in source_names_in_snapshot:
                 resolved_tournament_by_repo_source[(repository_name, source_name)] = resolved_name
 
-    connect_codes: set[str] = set()
-    for source_row in snapshot["sources"]:
-        for preview in source_row.get("player_preview") or []:
-            code = preview.get("slippi_code")
-            if code:
-                connect_codes.add(code)
-
-    profile_by_code = {code: fetch_profile_by_connect_code(code) for code in connect_codes}
+    # Do not block stream polling on external profile lookups.
+    profile_by_code: dict[str, object] = {}
 
     for source_row in snapshot["sources"]:
         enriched_preview = []

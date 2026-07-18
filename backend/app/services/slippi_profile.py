@@ -8,6 +8,7 @@ import httpx
 
 SLIPPI_GRAPHQL_ENDPOINT = "https://internal.slippi.gg/graphql"
 CACHE_TTL_SECONDS = 60 * 30
+FAILURE_CACHE_TTL_SECONDS = 60
 
 PROFILE_QUERY = """
 fragment profileFields on NetplayProfile {
@@ -50,10 +51,9 @@ def fetch_profile_by_connect_code(connect_code: str) -> SlippiProfile | None:
 
     profile = _fetch_profile_from_slippi(normalized_code)
 
-    # Avoid caching failures so transient network issues do not hide ratings.
-    if profile is not None:
-        with _cache_lock:
-            _cache[normalized_code] = (time.time() + CACHE_TTL_SECONDS, profile)
+    ttl = CACHE_TTL_SECONDS if profile is not None else FAILURE_CACHE_TTL_SECONDS
+    with _cache_lock:
+        _cache[normalized_code] = (time.time() + ttl, profile)
 
     return profile
 
@@ -70,7 +70,7 @@ def _fetch_profile_from_slippi(connect_code: str) -> SlippiProfile | None:
             SLIPPI_GRAPHQL_ENDPOINT,
             json=payload,
             headers={"content-type": "application/json"},
-            timeout=8.0,
+            timeout=2.0,
         )
         response.raise_for_status()
         body = response.json()

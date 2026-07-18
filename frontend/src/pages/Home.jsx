@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { fetchReplayFiles, fetchReplayFilterOptions, fetchStreamStatus } from "../lib/api";
+import { fetchReplayFiles, fetchReplayFilterOptions, fetchStreamStatus, openStreamEvents } from "../lib/api";
 import crownImage from "../assets/images/crown.png";
 
 const PAGE_SIZE = 40;
-const STREAM_SOURCE_STALE_MS = 5 * 60 * 1000;
-const STREAM_EVENT_ROW_LIMIT = 20;
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 const STAGE_IMAGES = import.meta.glob("../assets/images/stages/*.png", {
   eager: true,
@@ -578,15 +576,104 @@ function renderPlayerCell(file, index) {
   );
 }
 
+function renderDynamicPlayerCell(player, fallbackIndex) {
+  const info = player || null;
+  const port = info?.port ?? fallbackIndex;
+  const characterImage = getCharacterStock(info?.character_id, info?.character_color);
+  const rankImage = getRankImage(info?.rank);
+  const rating = info?.rating ?? "--";
+  const displayName = info?.name || info?.display_name || info?.tag || info?.connect_code || "-";
+  const connectCode = info?.connect_code || "-";
+  const isWinner = info?.is_winner === 1;
+  const isCpu = Boolean(info?.is_cpu) || Number(info?.type) === 1;
+
+  return (
+    <div className="player-cell">
+      <div className="player-name-wrap">
+        <div className="player-name">{displayName}{isCpu ? " [CPU]" : ""}</div>
+        {isWinner ? <img src={crownImage} alt="Winner" className="player-winner-crown" /> : null}
+      </div>
+      <div className="player-connect-code">{connectCode}</div>
+      <div className="player-meta-row">
+        <div className="player-meta-item">
+          {characterImage ? <img src={characterImage} alt="Character" className="player-character-icon" /> : "-"}
+        </div>
+        <div className="player-meta-item">
+          {rankImage ? <img src={rankImage} alt="Rank" className="player-rank-icon" /> : "-"}
+        </div>
+        <div className="player-rating">{rating}</div>
+      </div>
+      <div className="player-ports">
+        {[1, 2, 3, 4].map((slot) => {
+          const icon = getPortIcon(port, slot);
+          return icon ? <img key={slot} src={icon} alt={`Port ${slot}`} className="player-port-icon" /> : null;
+        })}
+      </div>
+    </div>
+  );
+}
+
+function getRowPlayers(file) {
+  const players = Array.isArray(file?.players) ? file.players : [];
+  const normalized = players
+    .filter((player) => player && typeof player === "object")
+    .slice()
+    .sort((a, b) => {
+      const pa = Number(a?.port);
+      const pb = Number(b?.port);
+      if (!Number.isFinite(pa) && !Number.isFinite(pb)) return 0;
+      if (!Number.isFinite(pa)) return 1;
+      if (!Number.isFinite(pb)) return -1;
+      return pa - pb;
+    });
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  return [
+    file?.player_1_info ? { ...file.player_1_info, name: file.player_1_info.name || file.player_1 } : null,
+    file?.player_2_info ? { ...file.player_2_info, name: file.player_2_info.name || file.player_2 } : null,
+  ].filter(Boolean);
+}
+
 function streamPreviewName(player) {
   if (!player) return null;
   return player.display_name || player.tag || player.slippi_code || null;
 }
 
+function selectStreamPlayers(preview) {
+  const players = Array.isArray(preview) ? preview.filter((player) => player && typeof player === "object") : [];
+  const byPort = new Map();
+
+  for (const player of players) {
+    const port = Number(player?.port);
+    if (Number.isInteger(port) && port >= 1 && port <= 4 && !byPort.has(port)) {
+      byPort.set(port, player);
+    }
+  }
+
+  const p1 = byPort.get(1) || players[0] || null;
+  let p2 = byPort.get(2) || null;
+
+  if (!p2 && p1) {
+    p2 = players.find((player) => player !== p1 && Number(player?.port) !== Number(p1?.port)) || null;
+  }
+
+  return { p1, p2 };
+}
+
 function streamEventStatusLabel(status) {
   switch ((status || "").toLowerCase()) {
+    case "controller_metadata":
+      return "Controller Metadata";
+    case "slippi_file_metadata":
+      return "Slippi File Metadata";
+    case "ended":
     case "completed":
-      return "Upload Completed";
+      return "Ended";
+    case "pending_parse":
+      return "Pending Partial Parse";
     case "failed":
       return "Upload Failed";
     case "incomplete":
@@ -615,9 +702,10 @@ export default function Home() {
   const [error, setError] = useState("");
   const [streamStatus, setStreamStatus] = useState({ tournament: null, sources: [], events: [] });
   const [streamError, setStreamError] = useState("");
-  const [streamAutoRefreshPaused, setStreamAutoRefreshPaused] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const sentinelRef = useRef(null);
+  const latestCompletedEventMsRef = useRef(0);
+  const lastHeartbeatRefreshMsRef = useRef(0);
 
   const streamSourceRows = useMemo(
     () =>
@@ -626,20 +714,45 @@ export default function Home() {
           if (source.connected) {
             return true;
           }
-          const updatedAt = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
-          if (Number.isNaN(updatedAt)) {
+
+          const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
+          if (Number.isNaN(updatedAtMs)) {
             return false;
           }
-          return nowMs - updatedAt <= STREAM_SOURCE_STALE_MS;
+
+          // Keep recently disconnected rows visible long enough to transition into uploaded files.
+          return nowMs - updatedAtMs < 20_000;
         })
         .map((source) => {
           const preview = Array.isArray(source.player_preview) ? source.player_preview : [];
-          const p1 = preview.find((player) => Number(player?.port) === 1) || preview[0] || null;
-          const p2 = preview.find((player) => Number(player?.port) === 2) || preview[1] || null;
-          const p1Name = streamPreviewName(p1) || source.source_name;
-          const p2Name = streamPreviewName(p2) || source.username;
-          const startedAt = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
-          const gameDuration = Number.isNaN(startedAt) ? null : Math.max(0, Math.floor((nowMs - startedAt) / 1000));
+          const { p1, p2 } = selectStreamPlayers(preview);
+          const streamPlayers = preview
+            .slice()
+            .sort((a, b) => (Number(a?.port) || 99) - (Number(b?.port) || 99))
+            .map((player) => ({
+              name: streamPreviewName(player) || "-",
+              connect_code: player?.slippi_code || "-",
+              port: Number(player?.port) || null,
+              rank: player?.rank || null,
+              rating: player?.rating ?? null,
+              type: null,
+              is_cpu: false,
+              character_id: null,
+              character_color: null,
+              is_winner: null,
+            }));
+          const p1Name = streamPreviewName(p1) || "-";
+          const p2Name = streamPreviewName(p2) || "-";
+          const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
+          const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
+          const lastActivityAtMs = source.last_activity_at ? new Date(source.last_activity_at).getTime() : NaN;
+          const durationBaseMs = !Number.isNaN(connectedAtMs)
+            ? connectedAtMs
+            : (!Number.isNaN(updatedAtMs) ? updatedAtMs : lastActivityAtMs);
+          const playedAt = source.connected_at || source.updated_at || source.last_activity_at || null;
+          const gameDuration = source.connected
+            ? (Number.isNaN(durationBaseMs) ? 0 : Math.max(0, Math.floor((nowMs - durationBaseMs) / 1000)))
+            : null;
           return {
             id: null,
             _streaming: true,
@@ -666,81 +779,28 @@ export default function Home() {
                   rating: p2.rating ?? null,
                 }
               : null,
-            stage: null,
+            stage: source.stage_preview ?? null,
             game_duration: gameDuration,
-            datetime_played: source.updated_at || null,
+            datetime_played: playedAt,
             stream_source_name: source.source_name,
             stream_repositories: source.repositories || [],
             resolved_tournament_name: source.resolved_tournament_name || null,
+            players: streamPlayers,
             name: `live:${source.source_name}`,
           };
         }),
     [streamStatus.sources, nowMs]
   );
 
-  const streamSourceByName = useMemo(() => {
-    const byName = new Map();
-    for (const source of streamStatus.sources || []) {
-      if (source?.source_name) {
-        byName.set(source.source_name, source);
-      }
-    }
-    return byName;
-  }, [streamStatus.sources]);
-
-  const streamEventRows = useMemo(() => {
-    const events = Array.isArray(streamStatus.events) ? streamStatus.events : [];
-    return events.slice(0, STREAM_EVENT_ROW_LIMIT).map((event) => {
-      const source = streamSourceByName.get(event.source_name) || null;
-      const preview = Array.isArray(source?.player_preview) ? source.player_preview : [];
-      const p1 = preview.find((player) => Number(player?.port) === 1) || preview[0] || null;
-      const p2 = preview.find((player) => Number(player?.port) === 2) || preview[1] || null;
-      const p1Name = streamPreviewName(p1) || event.source_name || "-";
-      const p2Name = streamPreviewName(p2) || event.username || "-";
-
-      return {
-        id: null,
-        _streaming: true,
-        _streamEvent: true,
-        _streamKind: "event",
-        _streamStatus: event.status,
-        _streamKey: `${event.source_name}-${event.timestamp}-${event.status}-${event.filename || ""}`,
-        player_1: p1Name,
-        player_2: p2Name,
-        player_1_info: p1
-          ? {
-              name: p1Name,
-              connect_code: p1.slippi_code || "-",
-              port: Number(p1.port) || 1,
-              rank: p1.rank || null,
-              rating: p1.rating ?? null,
-            }
-          : null,
-        player_2_info: p2
-          ? {
-              name: p2Name,
-              connect_code: p2.slippi_code || "-",
-              port: Number(p2.port) || 2,
-              rank: p2.rank || null,
-              rating: p2.rating ?? null,
-            }
-          : null,
-        stage: null,
-        game_duration: null,
-        datetime_played: event.timestamp || null,
-        stream_source_name: event.source_name,
-        stream_repositories: event.repository ? [event.repository] : [],
-        resolved_tournament_name: event.resolved_tournament_name || null,
-        stream_event_filename: event.filename || "",
-        name: `event:${event.source_name}`,
-      };
-    });
-  }, [streamStatus.events, streamSourceByName]);
-
   const tableRows = useMemo(
-    () => [...streamSourceRows, ...streamEventRows, ...files],
-    [streamSourceRows, streamEventRows, files]
+    () => [...streamSourceRows, ...files],
+    [streamSourceRows, files]
   );
+
+  const tablePlayerColumnCount = useMemo(() => {
+    const maxPlayers = tableRows.reduce((maxCount, row) => Math.max(maxCount, getRowPlayers(row).length), 0);
+    return Math.min(4, Math.max(2, maxPlayers));
+  }, [tableRows]);
 
   useEffect(() => {
     const nextFilters = parseFiltersFromSearch(searchParams);
@@ -795,45 +855,159 @@ export default function Home() {
     };
   }, []);
 
+  const loadFirstPage = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchReplayFiles({
+        ...debouncedFilters,
+        limit: PAGE_SIZE,
+      });
+      const nextCursor = data?.next_cursor ?? null;
+      setFiles(data.items);
+      setCursor(nextCursor);
+      setHasMore(nextCursor !== null);
+    } catch (err) {
+      setError(err.message);
+      setHasMore(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [debouncedFilters]);
+
   useEffect(() => {
     let active = true;
-    let timer = null;
+    let refreshTimer = null;
+    let periodicTimer = null;
+
+    function maybeRefreshReplayList(events) {
+      const completedEvents = (events || []).filter((event) => {
+        const status = (event?.status || "").toLowerCase();
+        return status === "ended" || status === "completed";
+      });
+      const newestCompletedEventMs = completedEvents.reduce((latest, event) => {
+        const ts = event?.timestamp ? new Date(event.timestamp).getTime() : NaN;
+        if (Number.isNaN(ts)) {
+          return latest;
+        }
+        return Math.max(latest, ts);
+      }, 0);
+
+      if (newestCompletedEventMs > latestCompletedEventMsRef.current) {
+        latestCompletedEventMsRef.current = newestCompletedEventMs;
+        void loadFirstPage();
+      }
+    }
 
     async function refreshOnce() {
       try {
         const data = await fetchStreamStatus();
-        if (active) {
-          setStreamStatus(data);
-          setStreamError("");
-          setStreamAutoRefreshPaused(false);
+        if (!active) {
+          return;
         }
+
+        setStreamStatus(data);
+        setStreamError("");
+        maybeRefreshReplayList(data?.events || []);
       } catch (err) {
         if (active) {
-          setStreamError(`${err.message || "Failed to load stream status"}. Auto-refresh paused.`);
-          setStreamAutoRefreshPaused(true);
+          setStreamError(err.message || "Failed to load stream status");
         }
-      } finally {
-        // Stream rows refresh independently from replay file loading state.
       }
     }
 
-    async function refreshLoop() {
-      await refreshOnce();
-      if (!active || streamAutoRefreshPaused) {
+    function scheduleRefresh() {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+      refreshTimer = setTimeout(() => {
+        void refreshOnce();
+      }, 150);
+    }
+
+    void refreshOnce();
+
+    const stream = openStreamEvents((event) => {
+      if (!active) {
         return;
       }
-      timer = setTimeout(refreshLoop, 4000);
-    }
 
-    refreshLoop();
+      if (event.type === "snapshot") {
+        try {
+          const payload = JSON.parse(event.data || "{}");
+          setStreamStatus({
+            tournament: payload?.tournament || null,
+            sources: Array.isArray(payload?.sources) ? payload.sources : [],
+            events: Array.isArray(payload?.events) ? payload.events : [],
+          });
+          setStreamError("");
+          maybeRefreshReplayList(payload?.events || []);
+        } catch {
+          scheduleRefresh();
+        }
+        return;
+      }
+
+      if (event.type === "heartbeat") {
+        const now = Date.now();
+        if (now - lastHeartbeatRefreshMsRef.current >= 10_000) {
+          lastHeartbeatRefreshMsRef.current = now;
+          scheduleRefresh();
+        }
+        return;
+      }
+
+      if (event.type === "stream_event") {
+        try {
+          const payload = JSON.parse(event.data || "{}");
+          setStreamStatus((prev) => {
+            const nextEvents = [payload, ...(prev?.events || [])]
+              .filter((row, index, rows) => {
+                const id = Number(row?.event_id) || 0;
+                if (!id) {
+                  return true;
+                }
+                return rows.findIndex((candidate) => (Number(candidate?.event_id) || 0) === id) === index;
+              })
+              .slice(0, 200);
+            return {
+              tournament: prev?.tournament || null,
+              sources: Array.isArray(prev?.sources) ? prev.sources : [],
+              events: nextEvents,
+            };
+          });
+          setStreamError("");
+          maybeRefreshReplayList([payload]);
+        } catch {
+          // Fall through to status refresh below.
+        }
+      }
+
+      scheduleRefresh();
+    });
+
+    periodicTimer = setInterval(() => {
+      void refreshOnce();
+    }, 10_000);
+
+    stream.onerror = () => {
+      if (!active) {
+        return;
+      }
+      setStreamError("Stream updates disconnected. Reconnecting...");
+    };
 
     return () => {
       active = false;
-      if (timer) {
-        clearTimeout(timer);
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
       }
+      if (periodicTimer) {
+        clearInterval(periodicTimer);
+      }
+      stream.close();
     };
-  }, [streamAutoRefreshPaused]);
+  }, [loadFirstPage]);
 
   useEffect(() => {
     const timerId = setInterval(() => {
@@ -844,26 +1018,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    async function loadFirstPage() {
-      setLoading(true);
-      setError("");
-      try {
-        const data = await fetchReplayFiles({
-          ...debouncedFilters,
-          limit: PAGE_SIZE,
-        });
-        setFiles(data.items);
-        setCursor(data.next_cursor);
-        setHasMore(data.next_cursor !== null);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadFirstPage();
-  }, [debouncedFilters]);
+    void loadFirstPage();
+  }, [loadFirstPage]);
 
   useEffect(() => {
     if (!sentinelRef.current) {
@@ -871,7 +1027,7 @@ export default function Home() {
     }
 
     const observer = new IntersectionObserver((entries) => {
-      if (!entries[0].isIntersecting || loading || !hasMore) {
+      if (!entries[0].isIntersecting || loading || !hasMore || error) {
         return;
       }
 
@@ -884,11 +1040,14 @@ export default function Home() {
             limit: PAGE_SIZE,
             cursor,
           });
+          const nextCursor = data?.next_cursor ?? null;
           setFiles((prev) => [...prev, ...data.items]);
-          setCursor(data.next_cursor);
-          setHasMore(data.next_cursor !== null);
+          setCursor(nextCursor);
+          // Stop auto-pagination if server does not provide a cursor or repeats it.
+          setHasMore(nextCursor !== null && nextCursor !== cursor);
         } catch (err) {
           setError(err.message);
+          setHasMore(false);
         } finally {
           setLoading(false);
         }
@@ -899,7 +1058,7 @@ export default function Home() {
 
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [debouncedFilters, cursor, hasMore, loading]);
+  }, [debouncedFilters, cursor, hasMore, loading, error]);
 
   function onFilterChange(e) {
     const { name, value } = e.target;
@@ -939,20 +1098,26 @@ export default function Home() {
     window.location.href = `slippi://play?path=${encodeURIComponent(replayUrl.toString())}`;
   }
 
-  async function onRetryStreamConnection() {
-    setStreamAutoRefreshPaused(false);
-    setStreamError("");
-    try {
-      const data = await fetchStreamStatus();
-      setStreamStatus(data);
-    } catch (err) {
-      setStreamError(`${err.message || "Failed to load stream status"}. Auto-refresh paused.`);
-      setStreamAutoRefreshPaused(true);
+  function streamInSlippi(sourceName) {
+    const normalizedSource = (sourceName || "").trim();
+    if (!normalizedSource) {
+      return;
     }
-  }
 
-  function filterByStreamSource(sourceName) {
-    setFilters((prev) => ({ ...prev, source: sourceName || "" }));
+    const latestSourceReplay = files.find(
+      (item) => (item.source_name || item.collection_name || "") === normalizedSource
+    );
+    const replayId = latestSourceReplay?.id ?? latestSourceReplay?._id;
+
+    // Keep the source filter in sync with the stream action.
+    setFilters((prev) => ({ ...prev, source: normalizedSource }));
+
+    if (replayId) {
+      openInSlippi(replayId);
+      return;
+    }
+
+    setStreamError(`No replay available yet for source ${normalizedSource}.`);
   }
 
   return (
@@ -1050,7 +1215,7 @@ export default function Home() {
 
                 {!isInitialLoading && tableRows.length === 0 && (
                   <tr>
-                    <td colSpan={5}>No files found.</td>
+                    <td colSpan={tablePlayerColumnCount + 3}>No files found.</td>
                   </tr>
                 )}
                 {tableRows.map((file) => {
@@ -1073,8 +1238,8 @@ export default function Home() {
                   const sourceLabel = isStreamingRow
                     ? (
                       isStreamEventRow
-                        ? `${file.stream_source_name || "-"} - ${streamEventStatusLabel(file._streamStatus)}`
-                        : (file.stream_source_name || "-")
+                        ? streamEventStatusLabel(file._streamStatus)
+                        : (file._streamConnected ? "Live stream" : "Disconnected stream")
                     )
                     : (file.source_name || file.collection_name || folderMeta.source || "-");
                   const streamBadgeLabel = isStreamEventRow
@@ -1082,6 +1247,11 @@ export default function Home() {
                     : file._streamConnected
                       ? "LIVE"
                       : "RECENT";
+                  const rowPlayers = getRowPlayers(file).slice(0, tablePlayerColumnCount);
+                  const paddedPlayers = [
+                    ...rowPlayers,
+                    ...Array.from({ length: Math.max(0, tablePlayerColumnCount - rowPlayers.length) }, () => null),
+                  ];
                   return (
                   <tr
                     key={
@@ -1104,17 +1274,24 @@ export default function Home() {
                         <div className="row-meta-secondary">{sourceLabel}</div>
                       </div>
                     </td>
-                    <td>{renderPlayerCell(file, 1)}</td>
-                    <td>{renderPlayerCell(file, 2)}</td>
+                    {paddedPlayers.map((player, idx) => (
+                      <td key={`player-col-${idx}`}>{renderDynamicPlayerCell(player, idx + 1)}</td>
+                    ))}
                     <td>
                       <div className="row-game-stack">
                         <div className="row-game-stage">
                           {isStreamingRow
-                            ? (isStreamEventRow ? streamEventStatusLabel(file._streamStatus) : "Streaming")
+                            ? (
+                              isStreamEventRow
+                                ? streamEventStatusLabel(file._streamStatus)
+                                : (file.stage !== null && file.stage !== undefined
+                                  ? formatStageName(file.stage)
+                                  : (file._streamConnected ? "Streaming" : "Disconnected"))
+                            )
                             : formatStageName(file.stage)}
                         </div>
                         <div className="row-game-duration">{formatGameDuration(file.game_duration)}</div>
-                        <div className="row-game-date">{formatPlayedDateTime(file.datetime_played)}</div>
+                        <div className="row-game-date">{formatPlayedDateTime(file.datetime_played || file.birth_time)}</div>
                       </div>
                     </td>
                     <td>
@@ -1124,16 +1301,9 @@ export default function Home() {
                             <button
                               type="button"
                               className="viewer-row-btn viewer-row-btn-secondary"
-                              onClick={() => filterByStreamSource(file.stream_source_name)}
+                              onClick={() => streamInSlippi(file.stream_source_name)}
                             >
-                              Filter Source
-                            </button>
-                            <button
-                              type="button"
-                              className="viewer-row-btn viewer-row-btn-secondary"
-                              onClick={() => void onRetryStreamConnection()}
-                            >
-                              Refresh Stream
+                              Stream in Slippi
                             </button>
                           </>
                         ) : (

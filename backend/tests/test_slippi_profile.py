@@ -36,7 +36,7 @@ def test_fetch_profile_returns_rating_and_rank(monkeypatch):
     assert result.rank == "Diamond_I"
 
 
-def test_failed_lookup_is_not_cached(monkeypatch):
+def test_failed_lookup_is_failure_cached(monkeypatch):
     _clear_profile_cache()
 
     calls = {"count": 0}
@@ -52,4 +52,4 @@ def test_failed_lookup_is_not_cached(monkeypatch):
 
     assert first is None
     assert second is None
-    assert calls["count"] == 2
+    assert calls["count"] == 1

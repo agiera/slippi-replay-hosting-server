@@ -147,7 +147,7 @@ def main() -> int:
                 print(f"[{action}] {path}  {mask(before)} -> {mask(after)}")
             else:
                 skipped += 1
-                print(f"[SKIP] {path}  current={mask(before)}")
+                print(f"[SKIP] {path}  current={before}")
         except Exception as exc:  # noqa: BLE001
             errored += 1
             print(f"[ERROR] {path}  {exc}")

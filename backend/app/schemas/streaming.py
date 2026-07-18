@@ -59,7 +59,11 @@ class LiveSourceStatusPublic(BaseModel):
     connected: bool
     repositories: list[str]
     resolved_tournament_name: str | None = None
+    stage_preview: int | None = None
+    connected_at: datetime | None = None
     updated_at: datetime | None = None
+    last_activity_at: datetime | None = None
+    stream_phase: str | None = None
     player_preview: list[LiveSourcePlayerPreviewPublic] = Field(default_factory=list)
 
 

@@ -27,13 +27,31 @@ def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
         temp_path = Path(tmp.name)
 
     try:
-        game = peppi_py.read_slippi(str(temp_path), skip_frames=True)
+        try:
+            game = peppi_py.read_slippi(str(temp_path), skip_frames=True, allow_incomplete=True)
+        except TypeError:
+            # Backward-compatible path for older peppi-py versions.
+            game = peppi_py.read_slippi(str(temp_path), skip_frames=True)
     finally:
         temp_path.unlink(missing_ok=True)
 
     metadata = game.metadata or {}
+    trailer_metadata = _extract_metadata_from_slp_tail(data)
+    if trailer_metadata:
+        if not isinstance(metadata, dict):
+            metadata = trailer_metadata
+        else:
+            merged = dict(metadata)
+            for key, value in trailer_metadata.items():
+                if merged.get(key) is None:
+                    merged[key] = value
+            metadata = merged
+
     start_time = metadata.get("startAt") if isinstance(metadata, dict) else None
     last_frame = _coerce_int(metadata.get("lastFrame")) if isinstance(metadata, dict) else None
+    if last_frame is None:
+        # Some replays omit metadata.lastFrame but still include an end frame.
+        last_frame = _coerce_int(getattr(getattr(game, "end", None), "frame", None))
     winners_by_port = _extract_winners_by_port(game)
 
     players = []
@@ -71,6 +89,136 @@ def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
         players=players,
         peppi_bytes=peppi_bytes,
     )
+
+
+def _extract_metadata_from_slp_tail(data: bytes) -> dict[str, Any] | None:
+    if not data:
+        return None
+
+    marker = b"metadata{"
+    marker_pos = data.rfind(marker)
+    if marker_pos < 0:
+        return None
+
+    obj_start = marker_pos + len(b"metadata")
+    if obj_start >= len(data) or data[obj_start] != ord("{"):
+        return None
+
+    try:
+        decoded, _ = _parse_ubjson_object(data, obj_start)
+    except Exception:
+        return None
+
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
+
+
+def _parse_ubjson_object(data: bytes, start: int) -> tuple[dict[str, Any], int]:
+    if start >= len(data) or data[start] != ord("{"):
+        raise ValueError("expected object opener")
+
+    pos = start + 1
+    out: dict[str, Any] = {}
+    while True:
+        if pos >= len(data):
+            raise ValueError("unterminated object")
+        if data[pos] == ord("}"):
+            return out, pos + 1
+
+        key, pos = _parse_ubjson_string(data, pos)
+        value, pos = _parse_ubjson_value(data, pos)
+        out[key] = value
+
+
+def _parse_ubjson_value(data: bytes, start: int) -> tuple[Any, int]:
+    if start >= len(data):
+        raise ValueError("missing value marker")
+
+    marker = data[start]
+    if marker == ord("{"):
+        return _parse_ubjson_object(data, start)
+    if marker == ord("S"):
+        return _parse_ubjson_string(data, start + 1)
+    if marker == ord("U"):
+        return data[start + 1], start + 2
+    if marker == ord("i"):
+        raw = data[start + 1]
+        return (raw - 256 if raw > 127 else raw), start + 2
+    if marker == ord("l"):
+        if start + 5 > len(data):
+            raise ValueError("truncated int32")
+        return int.from_bytes(data[start + 1:start + 5], byteorder="big", signed=True), start + 5
+    if marker == ord("T"):
+        return True, start + 1
+    if marker == ord("F"):
+        return False, start + 1
+    if marker == ord("Z"):
+        return None, start + 1
+
+    raise ValueError(f"unsupported value marker: {chr(marker)!r}")
+
+
+def _parse_ubjson_string(data: bytes, start: int) -> tuple[str, int]:
+    length, pos = _parse_ubjson_length(data, start)
+    end = pos + length
+    if end > len(data):
+        raise ValueError("truncated string")
+    return data[pos:end].decode("utf-8", errors="replace"), end
+
+
+def _parse_ubjson_length(data: bytes, start: int) -> tuple[int, int]:
+    if start + 2 > len(data):
+        raise ValueError("truncated length marker")
+
+    marker = data[start]
+    raw = data[start + 1]
+    if marker == ord("U"):
+        length = raw
+    elif marker == ord("i"):
+        length = raw - 256 if raw > 127 else raw
+    else:
+        raise ValueError("unsupported length marker")
+
+    if length < 0:
+        raise ValueError("negative length")
+    return length, start + 2
+
+
+def parse_slippi_stage_partial(data: bytes, suffix: str = ".slp") -> int | None:
+    """Best-effort stage extraction from potentially incomplete/corrupt replay bytes.
+
+    Attempts peppi parsing on progressively smaller prefixes so stage can still be
+    recovered when full replay parsing fails.
+    """
+
+    if not data:
+        return None
+
+    prefix_sizes = [len(data), 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024, 16 * 1024, 8 * 1024]
+    tried: set[int] = set()
+
+    for size in prefix_sizes:
+        size = min(size, len(data))
+        if size <= 0 or size in tried:
+            continue
+        tried.add(size)
+
+        with NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data[:size])
+            temp_path = Path(tmp.name)
+
+        try:
+            game = peppi_py.read_slippi(str(temp_path), skip_frames=True)
+            stage = _coerce_int(getattr(getattr(game, "start", None), "stage", None))
+            if stage is not None:
+                return stage
+        except Exception:
+            continue
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    return None
 
 
 def _coerce_int(value: Any) -> int | None:

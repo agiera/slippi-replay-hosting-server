@@ -1,6 +1,7 @@
 import hashlib
 import binascii
 import json
+import os
 import shutil
 import threading
 from collections import deque
@@ -100,6 +101,16 @@ class ReplayFTPHandler(FTPHandler):
 
     ftp_session: FTPSessionContext | None = None
     metadata_override: dict | None = None
+    _session_transfer_attempted: bool = False
+    _session_replay_transfer_attempted: bool = False
+    _pending_metadata_by_replay_name: dict[str, dict] = {}
+
+    def pre_process_command(self, line: str, cmd: str, arg: str) -> None:
+        try:
+            print(f"[FTP][TRACE] CMD {cmd} arg='{arg or ''}'", flush=True)
+        except Exception:
+            pass
+        super().pre_process_command(line, cmd, arg)
 
     def on_login(self, username: str) -> None:
         context = self.authorizer.pop_context(self)
@@ -107,9 +118,20 @@ class ReplayFTPHandler(FTPHandler):
             raise AuthenticationFailed("Session context missing")
         self.ftp_session = context
         self.metadata_override = _load_source_metadata_override(context.source_name)
+        self._session_transfer_attempted = False
+        self._session_replay_transfer_attempted = False
+        self._pending_metadata_by_replay_name = {}
+        print(
+            f"[FTP][TRACE] Login source='{context.source_name}' user='{context.username}' repos={sorted(context.repositories)}",
+            flush=True,
+        )
         _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
         if self.metadata_override:
-            _set_source_player_preview(context.source_name, self.metadata_override.get("players") or [])
+            _set_source_player_preview(
+                context.source_name,
+                self.metadata_override.get("players") or [],
+                stage=self.metadata_override.get("stage"),
+            )
         _record_stream_event(
             source_name=context.source_name,
             username=context.username,
@@ -120,6 +142,7 @@ class ReplayFTPHandler(FTPHandler):
         super().on_login(username)
 
     def ftp_SITE(self, line: str) -> None:
+        print(f"[FTP][TRACE] SITE raw='{line}'", flush=True)
         if not line:
             self.respond("501 SITE requires a command")
             return
@@ -154,13 +177,48 @@ class ReplayFTPHandler(FTPHandler):
 
     # pyftpdlib may dispatch SITE subcommands directly via ftp_SITE_<SUBCMD>.
     def ftp_SITE_SLPMETA(self, line: str) -> None:
-        self._handle_site_slpmeta(line.strip())
+        print(f"[FTP][TRACE] SITE SLPMETA arg='{line}'", flush=True)
+        self._handle_site_slpmeta(self._normalize_site_subcommand_arg(line, "SLPMETA"))
 
     def ftp_SITE_SLPMETAUBJ(self, line: str) -> None:
-        self._handle_site_slpmeta_ubjson(line.strip())
+        print(f"[FTP][TRACE] SITE SLPMETAUBJ arg_len={len(line or '')}", flush=True)
+        self._handle_site_slpmeta_ubjson(self._normalize_site_subcommand_arg(line, "SLPMETAUBJ"))
 
     def ftp_SITE_SLPMETAUBJSON(self, line: str) -> None:
-        self._handle_site_slpmeta_ubjson(line.strip())
+        print(f"[FTP][TRACE] SITE SLPMETAUBJSON arg_len={len(line or '')}", flush=True)
+        self._handle_site_slpmeta_ubjson(self._normalize_site_subcommand_arg(line, "SLPMETAUBJSON"))
+
+    def ftp_TYPE(self, line: str) -> None:
+        print(f"[FTP][TRACE] TYPE {line}", flush=True)
+        super().ftp_TYPE(line)
+
+    def ftp_PASV(self, line: str) -> None:
+        print("[FTP][TRACE] PASV", flush=True)
+        super().ftp_PASV(line)
+
+    def ftp_STOR(self, file: str, mode: str = "w") -> None:
+        self._session_transfer_attempted = True
+        if not self._is_metadata_sidecar_filename(file):
+            self._session_replay_transfer_attempted = True
+        # Wii clients may upload to dynamic folders (e.g. /ngpr-17/...).
+        # Ensure parent directories exist so STOR does not fail with 550.
+        try:
+            normalized_path = str(file or "").replace("\\", "/")
+
+            # pyftpdlib passes local filesystem paths to ftp_STOR in many code paths.
+            parent_local_dir = os.path.dirname(normalized_path)
+            if parent_local_dir and normalized_path.startswith(settings.FTP_STAGING_DIR):
+                os.makedirs(parent_local_dir, exist_ok=True)
+            else:
+                # Fallback when FTP-relative path is provided.
+                fs_path = self.fs.ftp2fs(normalized_path)
+                parent_dir = os.path.dirname(fs_path)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
+        except Exception as exc:
+            print(f"[FTP][TRACE] STOR mkdir failed for '{file}': {exc}", flush=True)
+        print(f"[FTP][TRACE] STOR file='{file}' mode='{mode}'", flush=True)
+        super().ftp_STOR(file, mode)
 
     def ftp_SITE_CLEARSLPMETA(self, _line: str) -> None:
         self.metadata_override = None
@@ -186,6 +244,25 @@ class ReplayFTPHandler(FTPHandler):
             return
 
         self._apply_metadata_override(payload)
+
+    @staticmethod
+    def _normalize_site_subcommand_arg(raw_line: str, subcommand: str) -> str:
+        normalized = (raw_line or "").strip()
+        upper = normalized.upper()
+        subcommand_upper = subcommand.upper()
+
+        if upper.startswith("SITE "):
+            normalized = normalized[5:].strip()
+            upper = normalized.upper()
+
+        if upper == subcommand_upper:
+            return ""
+
+        prefix = f"{subcommand_upper} "
+        if upper.startswith(prefix):
+            return normalized[len(prefix):].strip()
+
+        return normalized
 
     def _handle_site_slpmeta_ubjson(self, raw_hex: str) -> None:
         if not raw_hex:
@@ -248,18 +325,58 @@ class ReplayFTPHandler(FTPHandler):
             _store_source_metadata_override(self.ftp_session.source_name, payload)
             players_payload = payload.get("players")
             if isinstance(players_payload, list) and players_payload:
-                _set_source_player_preview(self.ftp_session.source_name, players_payload)
+                _set_source_player_preview(
+                    self.ftp_session.source_name,
+                    players_payload,
+                    stage=payload.get("stage"),
+                )
         self.respond("200 Applied Slippi metadata override for subsequent uploads")
 
     def on_file_received(self, file: str) -> None:
         staged_path = Path(file)
         repository_name = "unknown"
+        self._session_transfer_attempted = True
         try:
             if self.ftp_session is None:
                 return
 
             original_name = staged_path.name
             data = staged_path.read_bytes()
+
+            if self._is_metadata_sidecar_filename(original_name):
+                payload = _decode_uploaded_metadata_sidecar(data)
+                replay_name = self._replay_name_from_metadata_sidecar(original_name)
+                self._pending_metadata_by_replay_name[replay_name] = payload
+                self.metadata_override = payload
+                _store_source_metadata_override(self.ftp_session.source_name, payload)
+                _set_source_player_preview(
+                    self.ftp_session.source_name,
+                    payload.get("players") or [],
+                    stage=payload.get("stage"),
+                )
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=self.ftp_session.repository_name,
+                    filename=original_name,
+                    status="controller_metadata",
+                )
+                print(
+                    f"[FTP] Applied metadata sidecar '{original_name}' for replay '{replay_name}'",
+                    flush=True,
+                )
+                return
+
+            replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
+            if replay_metadata_override is not None:
+                self.metadata_override = replay_metadata_override
+                _set_source_player_preview(
+                    self.ftp_session.source_name,
+                    replay_metadata_override.get("players") or [],
+                    stage=replay_metadata_override.get("stage"),
+                )
+
+            self._session_replay_transfer_attempted = True
 
             repository_name = self._resolve_repository_for_path(staged_path)
             with SessionLocal() as db:
@@ -277,7 +394,7 @@ class ReplayFTPHandler(FTPHandler):
                     repository_name=repository_name,
                     original_name=original_name,
                     data=data,
-                    metadata_override=self.metadata_override,
+                    metadata_override=replay_metadata_override or self.metadata_override,
                 )
                 if self.ftp_session is not None:
                     refreshed_override = _refresh_source_metadata_from_file(
@@ -287,16 +404,37 @@ class ReplayFTPHandler(FTPHandler):
                     )
                     if refreshed_override:
                         self.metadata_override = refreshed_override
-                        _set_source_player_preview(self.ftp_session.source_name, refreshed_override.get("players") or [])
+                        _set_source_player_preview(
+                            self.ftp_session.source_name,
+                            refreshed_override.get("players") or [],
+                            stage=refreshed_override.get("stage"),
+                        )
                 db.commit()
 
-            _record_stream_event(
-                source_name=self.ftp_session.source_name,
-                username=self.ftp_session.username,
-                repository=repository_name,
-                filename=original_name,
-                status="completed",
-            )
+            parsed_slippi = _is_parsed_slippi_filename(row.name)
+            if parsed_slippi:
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=repository_name,
+                    filename=original_name,
+                    status="slippi_file_metadata",
+                )
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=repository_name,
+                    filename=original_name,
+                    status="ended",
+                )
+            else:
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=repository_name,
+                    filename=original_name,
+                    status="pending_parse",
+                )
 
             print(f"[FTP] Uploaded {original_name} to repository '{repository_name}'", flush=True)
         except Exception as exc:
@@ -316,6 +454,9 @@ class ReplayFTPHandler(FTPHandler):
                 pass
 
     def on_incomplete_file_received(self, file: str) -> None:
+        self._session_transfer_attempted = True
+        if not self._is_metadata_sidecar_filename(Path(file).name):
+            self._session_replay_transfer_attempted = True
         if self.ftp_session is not None:
             _record_stream_event(
                 source_name=self.ftp_session.source_name,
@@ -331,7 +472,11 @@ class ReplayFTPHandler(FTPHandler):
 
     def on_disconnect(self) -> None:
         if self.ftp_session is not None:
-            if _session_started_without_completion(self.ftp_session.source_name):
+            print(
+                f"[FTP][TRACE] Disconnect source='{self.ftp_session.source_name}' transfer_attempted={self._session_transfer_attempted}",
+                flush=True,
+            )
+            if self._session_replay_transfer_attempted and _session_started_without_completion(self.ftp_session.source_name):
                 _record_stream_event(
                     source_name=self.ftp_session.source_name,
                     username=self.ftp_session.username,
@@ -351,6 +496,17 @@ class ReplayFTPHandler(FTPHandler):
             )
         self.authorizer.clear_context(self)
         super().on_disconnect()
+
+    @staticmethod
+    def _is_metadata_sidecar_filename(filename: str) -> bool:
+        return str(filename).lower().endswith(".meta.json")
+
+    @staticmethod
+    def _replay_name_from_metadata_sidecar(filename: str) -> str:
+        value = str(filename)
+        if value.lower().endswith(".meta.json"):
+            return value[:-10]
+        return value
 
     def _resolve_repository_for_path(self, staged_path: Path) -> str:
         if self.ftp_session is None:
@@ -390,6 +546,28 @@ def _decode_site_slpmeta_ubjson(data: bytes) -> dict:
 
     players.sort(key=lambda player: int(player.get("port", 0)))
     return {"players": players}
+
+
+def _decode_uploaded_metadata_sidecar(raw_data: bytes) -> dict:
+    try:
+        payload = json.loads(raw_data.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("invalid metadata sidecar JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("metadata sidecar must be a JSON object")
+
+    ubjson_hex = payload.get("ubjson_hex")
+    if ubjson_hex is not None:
+        if not isinstance(ubjson_hex, str):
+            raise ValueError("ubjson_hex must be a string")
+        try:
+            ubjson_payload = binascii.unhexlify(ubjson_hex.encode("ascii"))
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("invalid ubjson_hex value") from exc
+        return _decode_site_slpmeta_ubjson(ubjson_payload)
+
+    return payload
 
 
 def _normalize_ubjson_player_fields(player_meta: dict) -> dict:
@@ -488,15 +666,22 @@ _server_thread: threading.Thread | None = None
 _stream_state_lock = threading.Lock()
 _source_connections: dict[str, dict] = {}
 _recent_events: deque[dict] = deque(maxlen=500)
+_stream_event_sequence: int = 0
+
+
+def _is_parsed_slippi_filename(filename: str | None) -> bool:
+    return str(filename or "").lower().endswith(".peppi.json.gz")
 
 
 def _set_source_connection_state(source_name: str, username: str, repositories: set[str], connected: bool) -> None:
     with _stream_state_lock:
         if connected:
             existing_preview = []
+            existing_stage_preview = None
             existing_last_completed_at = None
             if source_name in _source_connections:
                 existing_preview = list(_source_connections[source_name].get("player_preview") or [])
+                existing_stage_preview = _source_connections[source_name].get("stage_preview")
                 existing_last_completed_at = _source_connections[source_name].get("last_completed_at")
             now = datetime.now(timezone.utc)
             _source_connections[source_name] = {
@@ -506,9 +691,11 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 "connected": True,
                 "updated_at": now,
                 "player_preview": existing_preview,
+                "stage_preview": existing_stage_preview,
                 "connected_at": now,
                 "last_activity_at": now,
                 "last_completed_at": existing_last_completed_at,
+                "stream_phase": "started",
             }
         else:
             if source_name in _source_connections:
@@ -516,34 +703,108 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 _source_connections[source_name]["updated_at"] = datetime.now(timezone.utc)
 
 
-def _set_source_player_preview(source_name: str, players: list[dict]) -> None:
+def _set_source_player_preview(source_name: str, players: list[dict], *, stage: int | None = None) -> None:
     def _port_sort_key(player: dict) -> int:
         try:
             return int(player.get("port"))
         except (TypeError, ValueError):
             return 99
 
-    preview: list[dict] = []
-    for player in players:
+    def _normalize_preview_player(player: dict) -> dict | None:
         if not isinstance(player, dict):
-            continue
-        preview.append(
-            {
-                "port": player.get("port"),
-                "display_name": player.get("display_name"),
-                "tag": player.get("tag"),
-                "slippi_code": player.get("slippi_code"),
-                "firmware": player.get("firmware"),
-            }
-        )
+            return None
 
-    preview.sort(key=_port_sort_key)
+        normalized_fields = _normalize_ubjson_player_fields(player)
+
+        port_value = player.get("port")
+        try:
+            port = int(port_value) if port_value is not None else None
+        except (TypeError, ValueError):
+            port = None
+
+        # Accept either 1..4 or legacy 0..3 indexing.
+        if port is not None and 0 <= port <= 3:
+            port += 1
+        if port is not None and (port < 1 or port > 4):
+            port = None
+
+        display_name = normalized_fields.get("display_name") or player.get("display_name")
+        tag = normalized_fields.get("tag") or player.get("tag") or player.get("nametag")
+        slippi_code = (
+            normalized_fields.get("slippi_code")
+            or player.get("slippi_code")
+            or player.get("connect_code")
+            or player.get("connectCode")
+        )
+        firmware = normalized_fields.get("firmware") or player.get("firmware")
+
+        if not any([display_name, tag, slippi_code, firmware, port is not None]):
+            return None
+
+        return {
+            "port": port,
+            "display_name": display_name,
+            "tag": tag,
+            "slippi_code": slippi_code,
+            "firmware": firmware,
+        }
+
+    incoming_preview: list[dict] = []
+    for player in players:
+        normalized_player = _normalize_preview_player(player)
+        if normalized_player is None:
+            continue
+        incoming_preview.append(normalized_player)
+
+    incoming_preview.sort(key=_port_sort_key)
+
+    normalized_stage: int | None = None
+    if stage is not None:
+        try:
+            normalized_stage = int(stage)
+        except (TypeError, ValueError):
+            normalized_stage = None
 
     with _stream_state_lock:
         if source_name not in _source_connections:
             return
+
+        existing_preview = _source_connections[source_name].get("player_preview") or []
+        existing_by_port: dict[int | None, dict] = {}
+        for player in existing_preview:
+            try:
+                key = int(player.get("port")) if player.get("port") is not None else None
+            except (TypeError, ValueError):
+                key = None
+            existing_by_port[key] = dict(player)
+
+        merged_preview: list[dict] = []
+        incoming_keys: set[int | None] = set()
+        for player in incoming_preview:
+            try:
+                key = int(player.get("port")) if player.get("port") is not None else None
+            except (TypeError, ValueError):
+                key = None
+            incoming_keys.add(key)
+
+            merged = dict(existing_by_port.get(key, {}))
+            for field in ("port", "display_name", "tag", "slippi_code", "firmware"):
+                value = player.get(field)
+                if value is not None and value != "":
+                    merged[field] = value
+            merged_preview.append(merged)
+
+        for key, player in existing_by_port.items():
+            if key in incoming_keys:
+                continue
+            merged_preview.append(player)
+
+        merged_preview.sort(key=_port_sort_key)
+
         now = datetime.now(timezone.utc)
-        _source_connections[source_name]["player_preview"] = preview
+        _source_connections[source_name]["player_preview"] = merged_preview
+        if normalized_stage is not None:
+            _source_connections[source_name]["stage_preview"] = normalized_stage
         _source_connections[source_name]["updated_at"] = now
         _source_connections[source_name]["last_activity_at"] = now
 
@@ -645,10 +906,14 @@ def _session_started_without_completion(source_name: str) -> bool:
 
 
 def _record_stream_event(source_name: str, username: str, repository: str, filename: str, status: str) -> None:
+    global _stream_event_sequence
+
     event_time = datetime.now(timezone.utc)
     with _stream_state_lock:
+        _stream_event_sequence += 1
         _recent_events.appendleft(
             {
+                "event_id": _stream_event_sequence,
                 "source_name": source_name,
                 "username": username,
                 "repository": repository,
@@ -661,7 +926,8 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
         if source_name in _source_connections:
             _source_connections[source_name]["updated_at"] = event_time
             _source_connections[source_name]["last_activity_at"] = event_time
-            if status == "completed":
+            _source_connections[source_name]["stream_phase"] = status
+            if status in {"completed", "ended"}:
                 _source_connections[source_name]["last_completed_at"] = event_time
 
 
@@ -682,6 +948,21 @@ def get_stream_status_snapshot(source_names: set[str] | None = None) -> dict[str
         "sources": sources,
         "events": events,
     }
+
+
+def get_stream_events_since(last_event_id: int, source_names: set[str] | None = None) -> list[dict]:
+    with _stream_state_lock:
+        events = list(_recent_events)
+
+    if source_names is not None:
+        events = [event for event in events if event.get("source_name") in source_names]
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    events = [event for event in events if event.get("timestamp") and event["timestamp"] >= cutoff]
+
+    filtered = [event for event in events if int(event.get("event_id", 0)) > last_event_id]
+    filtered.sort(key=lambda event: int(event.get("event_id", 0)))
+    return filtered
 
 
 def _authenticate_ftp_credentials(

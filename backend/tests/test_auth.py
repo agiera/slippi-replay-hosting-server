@@ -251,7 +251,8 @@ def test_public_files_endpoint_enriches_player_rank_rating(client, db_session, m
 
     monkeypatch.setattr("app.api.v1.replays.fetch_profile_by_connect_code", _fake_lookup)
 
-    res = client.get("/api/v1/replays/files", params={"keyword": "ranked"})
+    # Profile enrichment now runs only when rank/rating filters are requested.
+    res = client.get("/api/v1/replays/files", params={"keyword": "ranked", "rank": "Diamond_I"})
     assert res.status_code == 200
     items = res.json()["items"]
     assert len(items) == 1
@@ -433,6 +434,7 @@ def test_api_token_generation_requires_uploader_or_superuser(client, db_session)
     assert allow_res.status_code == 200
     body = allow_res.json()
     assert body["token"].startswith("slp_")
+    assert len(body["token"]) == 30
     assert body["token_info"]["collection_name"] == "uploader-token"
 
 
@@ -741,6 +743,201 @@ def test_persist_replay_upload_prefers_parsed_replay_data_over_metadata_override
     assert players[1].display_name == "Zain"
     assert players[1].connect_code == "ZAIN#001"
     assert players[1].character_id == 18
+
+
+def test_persist_replay_upload_infers_ports_from_metadata_players_map(db_session, tmp_path):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+    token_row = db_session.scalar(select(ApiToken).where(ApiToken.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()))
+    assert token_row is not None
+
+    fake_parsed = ParsedReplayData(
+        stage=31,
+        start_time="2024-03-02T18:20:00Z",
+        last_frame=9000,
+        is_teams=0,
+        players=[
+            {
+                "port": 1,
+                "type": 0,
+                "character_id": 2,
+                "connect_code": None,
+                "display_name": None,
+                "tag": None,
+                "user_id": None,
+            },
+            {
+                "port": 2,
+                "type": 0,
+                "character_id": 18,
+                "connect_code": None,
+                "display_name": None,
+                "tag": None,
+                "user_id": None,
+            },
+        ],
+        peppi_bytes=b"COMPRESSED-PEPPI",
+    )
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        row = persist_replay_upload(
+            db_session,
+            token_row=token_row,
+            repository_name="public",
+            original_name="parsed.slp",
+            data=b"SLP-DATA",
+            metadata_override={
+                "players": {
+                    "0": {
+                        "display_name": "P1 Name",
+                        "tag": "P1Tag",
+                        "slippi_code": "P1#111",
+                    },
+                    "1": {
+                        "display_name": "P2 Name",
+                        "tag": "P2Tag",
+                        "slippi_code": "P2#222",
+                    },
+                },
+            },
+            parse_replay=lambda *_args, **_kwargs: fake_parsed,
+        )
+        db_session.commit()
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+    game = db_session.scalar(select(Game).where(Game.file_id == row._id))
+    assert game is not None
+
+    players = db_session.scalars(select(Player).where(Player.game_id == game._id).order_by(Player.port)).all()
+    assert len(players) == 2
+    assert players[0].port == 1
+    assert players[0].display_name == "P1 Name"
+    assert players[0].tag == "P1Tag"
+    assert players[0].connect_code == "P1#111"
+    assert players[1].port == 2
+    assert players[1].display_name == "P2 Name"
+    assert players[1].tag == "P2Tag"
+    assert players[1].connect_code == "P2#222"
+
+
+def test_persist_replay_upload_persists_metadata_players_when_parse_fails(db_session, tmp_path):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+    token_row = db_session.scalar(select(ApiToken).where(ApiToken.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()))
+    assert token_row is not None
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        row = persist_replay_upload(
+            db_session,
+            token_row=token_row,
+            repository_name="public",
+            original_name="failed-parse.slp",
+            data=b"SLP-DATA",
+            metadata_override={
+                "players": {
+                    "0": {
+                        "display_name": "Meta P1",
+                        "slippi_code": "META#001",
+                    },
+                    "1": {
+                        "display_name": "Meta P2",
+                        "slippi_code": "META#002",
+                    },
+                },
+            },
+            parse_replay=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("parse failed")),
+        )
+        db_session.commit()
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+    game = db_session.scalar(select(Game).where(Game.file_id == row._id))
+    assert game is not None
+
+    players = db_session.scalars(select(Player).where(Player.game_id == game._id).order_by(Player.port)).all()
+    assert len(players) == 2
+    assert players[0].port == 1
+    assert players[0].display_name == "Meta P1"
+    assert players[0].connect_code == "META#001"
+    assert players[1].port == 2
+    assert players[1].display_name == "Meta P2"
+    assert players[1].connect_code == "META#002"
+
+
+def test_persist_replay_upload_stores_rank_and_rating(db_session, tmp_path, monkeypatch):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+    token_row = db_session.scalar(select(ApiToken).where(ApiToken.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()))
+    assert token_row is not None
+
+    class _FakeProfile:
+        def __init__(self, rank, rating):
+            self.rank = rank
+            self.rating = rating
+
+    def _fake_lookup(code):
+        if code == "MANGO#001":
+            return _FakeProfile("Diamond_I", 2004)
+        return None
+
+    monkeypatch.setattr("app.services.replay_upload.fetch_profile_by_connect_code", _fake_lookup)
+
+    fake_parsed = ParsedReplayData(
+        stage=31,
+        start_time="2024-03-02T18:20:00Z",
+        last_frame=9000,
+        is_teams=0,
+        players=[
+            {
+                "port": 1,
+                "type": 0,
+                "character_id": 2,
+                "connect_code": "MANGO#001",
+                "display_name": "Mango",
+                "tag": "Mang0",
+                "user_id": "uid-mango",
+            },
+            {
+                "port": 2,
+                "type": 0,
+                "character_id": 18,
+                "connect_code": "NOPE#000",
+                "display_name": "Other",
+                "tag": "Other",
+                "user_id": "uid-other",
+            },
+        ],
+        peppi_bytes=b"COMPRESSED-PEPPI",
+    )
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        row = persist_replay_upload(
+            db_session,
+            token_row=token_row,
+            repository_name="public",
+            original_name="ranked.slp",
+            data=b"SLP-DATA",
+            parse_replay=lambda *_args, **_kwargs: fake_parsed,
+        )
+        db_session.commit()
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+    game = db_session.scalar(select(Game).where(Game.file_id == row._id))
+    assert game is not None
+
+    players = db_session.scalars(select(Player).where(Player.game_id == game._id).order_by(Player.port)).all()
+    assert len(players) == 2
+    assert players[0].connect_code == "MANGO#001"
+    assert players[0].rank == "Diamond_I"
+    assert players[0].rating == 2004
+    assert players[1].connect_code == "NOPE#000"
+    assert players[1].rank is None
+    assert players[1].rating is None
 
 
 def test_replay_download_endpoint_returns_uploaded_file(client, db_session, tmp_path):

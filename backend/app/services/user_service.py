@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+import string
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
@@ -13,6 +14,15 @@ from app.models.repository import Repository
 from app.models.user import User
 
 PUBLIC_REPOSITORY_NAME = "public"
+API_TOKEN_PREFIX = "slp_"
+API_TOKEN_TOTAL_LENGTH = 30
+API_TOKEN_RANDOM_LENGTH = API_TOKEN_TOTAL_LENGTH - len(API_TOKEN_PREFIX)
+API_TOKEN_ALPHABET = string.ascii_letters + string.digits + "-_"
+
+
+def _generate_api_token() -> str:
+    random_part = "".join(secrets.choice(API_TOKEN_ALPHABET) for _ in range(API_TOKEN_RANDOM_LENGTH))
+    return f"{API_TOKEN_PREFIX}{random_part}"
 
 
 def get_or_create_public_repository(db: Session) -> Repository:
@@ -131,7 +141,7 @@ def create_api_token_for_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source name must be globally unique")
 
     repositories = _resolve_repositories_for_token(db, user, repository_ids)
-    raw_token = f"slp_{secrets.token_urlsafe(32)}"
+    raw_token = _generate_api_token()
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     token = ApiToken(
         user_id=user.id,

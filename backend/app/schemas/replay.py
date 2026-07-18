@@ -7,6 +7,8 @@ class ReplayPlayerPublic(BaseModel):
     character_id: int | None
     character_color: int | None
     port: int | None
+    type: int | None = None
+    is_cpu: bool = False
     is_winner: int | None
     rank: str | None
     rating: int | None
@@ -24,6 +26,7 @@ class ReplayFilePublic(BaseModel):
     player_2: str | None
     player_1_info: ReplayPlayerPublic | None
     player_2_info: ReplayPlayerPublic | None
+    players: list[ReplayPlayerPublic] = []
     stage: int | None
     game_duration: int | None
     datetime_played: str | None

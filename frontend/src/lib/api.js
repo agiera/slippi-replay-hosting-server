@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 
 const ACCESS_TOKEN_KEY = "token";
 const REFRESH_TOKEN_KEY = "refresh_token";
@@ -175,6 +175,25 @@ export async function fetchStreamStatus(tournamentId) {
     throw new Error(await extractError(res));
   }
   return res.json();
+}
+
+export function openStreamEvents(onEvent, { tournamentId } = {}) {
+  const search = new URLSearchParams();
+  if (tournamentId) {
+    search.set("tournament_id", String(tournamentId));
+  }
+
+  const rawUrl = `${API_BASE}/replays/stream/events${search.toString() ? `?${search.toString()}` : ""}`;
+  const url = new URL(rawUrl, window.location.origin).toString();
+  const eventSource = new EventSource(url);
+
+  if (typeof onEvent === "function") {
+    eventSource.addEventListener("snapshot", onEvent);
+    eventSource.addEventListener("stream_event", onEvent);
+    eventSource.addEventListener("heartbeat", onEvent);
+  }
+
+  return eventSource;
 }
 
 export async function listMyApiTokens() {
