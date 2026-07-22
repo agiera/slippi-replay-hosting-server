@@ -156,6 +156,22 @@ body {
   gap: 8px;
 }
 
+.filter-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.filter-checkbox-row input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  border-radius: 4px;
+}
+
 .search-multiselect {
   position: relative;
 }

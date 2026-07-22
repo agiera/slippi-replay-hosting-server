@@ -15,6 +15,7 @@ from app.services.ftp_server import (
     _authenticate_ftp_credentials,
     _clear_source_metadata_override,
     _decode_site_slpmeta_ubjson,
+    _normalize_metadata_override_payload,
     get_stream_events_since,
     _is_parsed_slippi_filename,
     _load_source_metadata_override,
@@ -158,6 +159,37 @@ def test_decode_site_slpmeta_ubjson_golden_payload():
     }
 
 
+def test_normalize_metadata_override_payload_infers_ports_from_player_list_order():
+    payload = {
+        "stage": "31",
+        "players": [
+            {"display_name": "Port 1 by position", "slippi_code": "P1#111"},
+            {"display_name": "Port 2 by position", "slippi_code": "P2#222"},
+        ],
+    }
+
+    normalized = _normalize_metadata_override_payload(payload)
+
+    assert normalized["stage"] == 31
+    assert normalized["players"][0]["port"] == 1
+    assert normalized["players"][0]["display_name"] == "Port 1 by position"
+    assert normalized["players"][1]["port"] == 2
+    assert normalized["players"][1]["display_name"] == "Port 2 by position"
+
+
+def test_normalize_metadata_override_payload_infers_ports_from_object_keys():
+    payload = {
+        "players": {
+            "0": {"tag": "P1", "slippi_code": "ONE#001"},
+            "2": {"tag": "P3", "slippi_code": "THREE#003"},
+        }
+    }
+
+    normalized = _normalize_metadata_override_payload(payload)
+
+    assert [player["port"] for player in normalized["players"]] == [1, 3]
+
+
 def test_source_metadata_override_round_trip(db_session, testing_session_local):
     payload = {
         "players": [
@@ -193,7 +225,7 @@ def test_stream_preview_merges_controller_and_slippi_metadata():
         source_name,
         [
             {
-                "port": 0,
+                "port": 1,
                 "display_name": "Controller Name",
                 "tag": "CTRL",
                 "firmware": "1.2.3",
@@ -204,7 +236,7 @@ def test_stream_preview_merges_controller_and_slippi_metadata():
         source_name,
         [
             {
-                "port": 0,
+                "port": 1,
                 "slippi_code": "CTRL#001",
             }
         ],
@@ -222,6 +254,134 @@ def test_stream_preview_merges_controller_and_slippi_metadata():
     assert merged["tag"] == "CTRL"
     assert merged["firmware"] == "1.2.3"
     assert merged["slippi_code"] == "CTRL#001"
+
+
+def test_stream_preview_carries_slippi_character_and_cpu():
+    source_name = "slp-preview-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    # Seed a controller-only human (as the sidecar/on_login would).
+    _set_source_player_preview(
+        source_name,
+        [{"port": 1, "display_name": "Human", "slippi_code": "HUM#001"}],
+    )
+    # Partial-SLP parse adds character/type/is_cpu for the human and the CPU on port 3,
+    # so the live preview matches the completed row.
+    _set_source_player_preview(
+        source_name,
+        [
+            {"port": 1, "connect_code": "HUM#001", "character_id": 9, "type": 0, "is_cpu": False},
+            {"port": 3, "character_id": 2, "type": 1, "is_cpu": True},
+        ],
+        stage=8,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    preview_by_port = {player["port"]: player for player in state["player_preview"]}
+    assert state["stage_preview"] == 8
+    assert set(preview_by_port) == {1, 3}
+    assert preview_by_port[1]["display_name"] == "Human"
+    assert preview_by_port[1]["character_id"] == 9
+    assert preview_by_port[1]["is_cpu"] is False
+    assert preview_by_port[3]["character_id"] == 2
+    assert preview_by_port[3]["type"] == 1
+    assert preview_by_port[3]["is_cpu"] is True
+
+
+def test_stream_preview_enrich_only_omits_sidecar_only_players():
+    source_name = "enrich-only-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    # SLP metadata defines the roster: a human on port 1 and a CPU on port 3.
+    _set_source_player_preview(
+        source_name,
+        [
+            {"port": 1, "display_name": "Human", "character_id": 9, "type": 0, "is_cpu": False},
+            {"port": 3, "character_id": 2, "type": 1, "is_cpu": True},
+        ],
+        stage=8,
+    )
+    # Sidecar enriches port 1 (firmware) and also carries a port-2 player that is
+    # NOT in the SLP roster; enrich_only must drop the sidecar-only port.
+    _set_source_player_preview(
+        source_name,
+        [
+            {"port": 1, "firmware": "1.2.3"},
+            {"port": 2, "display_name": "Sidecar Ghost", "firmware": "9.9.9"},
+        ],
+        enrich_only=True,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    preview_by_port = {player["port"]: player for player in state["player_preview"]}
+    # Only the SLP-roster ports remain; the sidecar-only port 2 is omitted.
+    assert set(preview_by_port) == {1, 3}
+    # Port 1 keeps its SLP fields and gains the sidecar firmware.
+    assert preview_by_port[1]["display_name"] == "Human"
+    assert preview_by_port[1]["character_id"] == 9
+    assert preview_by_port[1]["firmware"] == "1.2.3"
+    # Port 3 is untouched by the sidecar.
+    assert preview_by_port[3]["character_id"] == 2
+    assert preview_by_port[3]["is_cpu"] is True
+
+
+def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
+    source_name = "sidecar-first-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    # Real-world ordering: the sidecar (.meta.json) is uploaded before the .slp,
+    # so its enrichment arrives while the roster is still empty.
+    _set_source_player_preview(
+        source_name,
+        [
+            {"port": 1, "firmware": "1.2.3"},
+            {"port": 2, "display_name": "Sidecar Ghost", "firmware": "9.9.9"},
+        ],
+        enrich_only=True,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+    preview_by_port = {player["port"]: player for player in state["player_preview"]}
+    # Before the SLP roster lands, the sidecar seeds a temporary live preview so
+    # the UI can update immediately.
+    assert set(preview_by_port) == {1, 2}
+    assert preview_by_port[1]["firmware"] == "1.2.3"
+    assert preview_by_port[2]["display_name"] == "Sidecar Ghost"
+
+    # The partial-SLP parse then lands the roster; the earlier sidecar firmware
+    # must now fill in on the matching port without keeping the sidecar-only port.
+    _set_source_player_preview(
+        source_name,
+        [
+            {"port": 1, "display_name": "Human", "character_id": 9, "type": 0, "is_cpu": False},
+            {"port": 3, "character_id": 2, "type": 1, "is_cpu": True},
+        ],
+        stage=8,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    preview_by_port = {player["port"]: player for player in state["player_preview"]}
+    assert set(preview_by_port) == {1, 3}
+    assert preview_by_port[1]["display_name"] == "Human"
+    assert preview_by_port[1]["character_id"] == 9
+    assert preview_by_port[1]["firmware"] == "1.2.3"
+    assert preview_by_port[3]["character_id"] == 2
 
 
 def test_stream_phase_marks_ended_as_completion():

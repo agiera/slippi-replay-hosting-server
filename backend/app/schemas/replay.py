@@ -30,6 +30,10 @@ class ReplayFilePublic(BaseModel):
     stage: int | None
     game_duration: int | None
     datetime_played: str | None
+    handwarmer_label: str | None = None
+    handwarmer_reason: str | None = None
+    handwarmer_score: float | None = None
+    handwarmer_version: int | None = None
 
     model_config = {"from_attributes": True}
 

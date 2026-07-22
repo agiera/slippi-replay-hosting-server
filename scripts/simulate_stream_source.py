@@ -5,10 +5,8 @@ This script connects to the backend FTP ingest server using an existing
 uploader/superuser username + source token, then keeps the connection alive.
 
 Optional: it can upload small dummy .slp files at an interval to generate
-recent stream events while connected.
-
-It can also send the backend's custom SITE SLPMETAUBJ command so metadata
-override behavior can be exercised from the simulator.
+recent stream events while connected. If metadata is configured, a .meta.json
+sidecar is uploaded immediately before each replay file.
 """
 
 from __future__ import annotations
@@ -37,7 +35,6 @@ class Config:
     upload_interval_seconds: float
     upload_prefix: str
     slpmeta_ubjson_hex: str | None
-    clear_slpmeta_on_exit: bool
 
 
 BAKED_CONTROLLER_METADATA_BY_PORT: dict[str, dict[str, str]] = {
@@ -112,19 +109,13 @@ def parse_args() -> Config:
     slpmeta_group.add_argument(
         "--slpmeta-ubjson-hex",
         default=os.getenv("STREAM_SIM_SLPMETA_UBJSON_HEX", ""),
-        help="Pre-encoded UBJSON metadata payload in hex for SITE SLPMETAUBJ.",
+        help="Pre-encoded UBJSON metadata payload in hex to embed in per-replay .meta.json sidecar.",
     )
     slpmeta_group.add_argument(
         "--use-baked-slpmeta",
         action="store_true",
         default=os.getenv("STREAM_SIM_USE_BAKED_SLPMETA", "").strip().lower() in {"1", "true", "yes", "on"},
-        help="Use built-in demo controller metadata and send it as SITE SLPMETAUBJ.",
-    )
-    parser.add_argument(
-        "--clear-slpmeta-on-exit",
-        action="store_true",
-        default=os.getenv("STREAM_SIM_CLEAR_SLPMETA_ON_EXIT", "").strip().lower() in {"1", "true", "yes", "on"},
-        help="Send SITE CLEARSLPMETA before disconnecting if SLPMETAUBJ was applied.",
+        help="Use built-in demo controller metadata and upload it as a .meta.json sidecar.",
     )
 
     args = parser.parse_args()
@@ -157,7 +148,6 @@ def parse_args() -> Config:
         upload_interval_seconds=args.upload_interval_seconds,
         upload_prefix=args.upload_prefix,
         slpmeta_ubjson_hex=slpmeta_ubjson_hex,
-        clear_slpmeta_on_exit=args.clear_slpmeta_on_exit,
     )
 
 
@@ -319,12 +309,11 @@ def connect_ftp(cfg: Config) -> FTP:
     return ftp
 
 
-def apply_slpmeta_override(ftp: FTP, cfg: Config) -> None:
-    if not cfg.slpmeta_ubjson_hex:
-        return
-
-    response = ftp.sendcmd(f"SITE SLPMETAUBJ {cfg.slpmeta_ubjson_hex}")
-    print(f"Applied SITE SLPMETAUBJ: {response}", flush=True)
+def upload_metadata_sidecar(ftp: FTP, replay_filename: str, ubjson_hex: str) -> None:
+    sidecar_json = json.dumps({"ubjson_hex": ubjson_hex}).encode("utf-8")
+    sidecar_filename = replay_filename + ".meta.json"
+    ftp.storbinary(f"STOR {sidecar_filename}", io.BytesIO(sidecar_json))
+    print(f"Uploaded metadata sidecar: {sidecar_filename}", flush=True)
 
 
 def upload_dummy_replay(ftp: FTP, filename: str, payload: bytes) -> None:
@@ -344,14 +333,6 @@ def upload_dummy_replay(ftp: FTP, filename: str, payload: bytes) -> None:
         raise
 
 
-def clear_slpmeta_override(ftp: FTP, cfg: Config) -> None:
-    if not cfg.slpmeta_ubjson_hex or not cfg.clear_slpmeta_on_exit:
-        return
-
-    response = ftp.sendcmd("SITE CLEARSLPMETA")
-    print(f"Cleared SITE SLPMETA: {response}", flush=True)
-
-
 def run(cfg: Config) -> int:
     print(
         f"Connecting to FTP {cfg.host}:{cfg.port} as '{cfg.username}'...",
@@ -368,16 +349,6 @@ def run(cfg: Config) -> int:
             file=sys.stderr,
         )
         return 2
-
-    try:
-        apply_slpmeta_override(ftp, cfg)
-    except ftp_errors as exc:
-        print(f"Failed to apply SITE SLPMETAUBJ: {exc}", file=sys.stderr)
-        try:
-            ftp.quit()
-        except Exception:
-            pass
-        return 3
 
     print("Connected. Stream source should now appear as live in the UI.", flush=True)
     if cfg.upload_interval_seconds > 0:
@@ -408,6 +379,8 @@ def run(cfg: Config) -> int:
             if now >= next_upload_at:
                 payload = build_dummy_replay_bytes()
                 filename = f"{cfg.upload_prefix}-{int(time.time())}.slp"
+                if cfg.slpmeta_ubjson_hex:
+                    upload_metadata_sidecar(ftp, filename, cfg.slpmeta_ubjson_hex)
                 upload_dummy_replay(ftp, filename, payload)
                 print(f"Uploaded dummy replay: {filename}", flush=True)
                 next_upload_at = now + cfg.upload_interval_seconds
@@ -418,10 +391,6 @@ def run(cfg: Config) -> int:
         print(f"FTP connection dropped: {exc}", file=sys.stderr)
         return 4
     finally:
-        try:
-            clear_slpmeta_override(ftp, cfg)
-        except Exception:
-            pass
         try:
             ftp.quit()
         except Exception:

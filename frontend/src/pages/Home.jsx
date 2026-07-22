@@ -99,6 +99,7 @@ const INITIAL_FILTERS = {
   repository: "",
   tournament: "",
   source: "",
+  include_handwarmers: "",
   date_from: "",
   date_to: "",
 };
@@ -375,6 +376,7 @@ function parseFiltersFromSearch(searchParams) {
     repository: searchParams.get("repository") || "",
     tournament: searchParams.get("tournament") || "",
     source: searchParams.get("source") || searchParams.get("collection") || "",
+    include_handwarmers: searchParams.get("include_handwarmers") || "",
     date_from: searchParams.get("date_from") || "",
     date_to: searchParams.get("date_to") || "",
   };
@@ -388,6 +390,38 @@ function buildSearchParams(filters) {
     }
   });
   return params;
+}
+
+function normalizeStreamStatusPayload(payload, fallbackEvents = []) {
+  const normalizedSources = (Array.isArray(payload?.sources) ? payload.sources : []).map((source) => {
+    const normalizedPreview = (Array.isArray(source?.player_preview) ? source.player_preview : []).map((player) => {
+      const connectCode = player?.connect_code || player?.slippi_code || null;
+      const name = player?.name || player?.display_name || player?.tag || connectCode || null;
+      return {
+        name,
+        connect_code: connectCode,
+        character_id: player?.character_id ?? null,
+        character_color: player?.character_color ?? null,
+        port: player?.port ?? null,
+        type: player?.type ?? null,
+        is_cpu: Boolean(player?.is_cpu),
+        is_winner: player?.is_winner ?? null,
+        rank: player?.rank ?? null,
+        rating: player?.rating ?? null,
+      };
+    });
+
+    return {
+      ...source,
+      player_preview: normalizedPreview,
+    };
+  });
+
+  return {
+    tournament: payload?.tournament || null,
+    sources: normalizedSources,
+    events: Array.isArray(payload?.events) ? payload.events : fallbackEvents,
+  };
 }
 
 function formatGameDuration(totalSeconds) {
@@ -539,53 +573,24 @@ function getPortIcon(activePort, slot) {
   return PORT_ICONS["../assets/icons/noport.svg"] || "";
 }
 
-function renderPlayerCell(file, index) {
-  const info = index === 1 ? file.player_1_info : file.player_2_info;
-  const fallbackName = index === 1 ? file.player_1 : file.player_2;
-  const port = info?.port ?? index;
-  const characterImage = getCharacterStock(info?.character_id, info?.character_color);
-  const rankImage = getRankImage(info?.rank);
-  const rating = info?.rating ?? "--";
-  const displayName = info?.name || fallbackName || "-";
-  const connectCode = info?.connect_code || "-";
-  const isWinner = info?.is_winner === 1;
+// Renders a single player cell. Both live-stream rows and completed replay rows
+// produce the same normalized player shape, so they share this one renderer.
+function renderPlayerCell(player) {
+  // Empty padded slot (e.g. a live row with fewer players than the column count):
+  // render a blank cell instead of fabricating a port badge for a non-existent player.
+  if (!player) {
+    return <div className="player-cell player-cell-empty" />;
+  }
 
-  return (
-    <div className="player-cell">
-      <div className="player-name-wrap">
-        <div className="player-name">{displayName}</div>
-        {isWinner ? <img src={crownImage} alt="Winner" className="player-winner-crown" /> : null}
-      </div>
-      <div className="player-connect-code">{connectCode}</div>
-      <div className="player-meta-row">
-        <div className="player-meta-item">
-          {characterImage ? <img src={characterImage} alt="Character" className="player-character-icon" /> : "-"}
-        </div>
-        <div className="player-meta-item">
-          {rankImage ? <img src={rankImage} alt="Rank" className="player-rank-icon" /> : "-"}
-        </div>
-        <div className="player-rating">{rating}</div>
-      </div>
-      <div className="player-ports">
-        {[1, 2, 3, 4].map((slot) => {
-          const icon = getPortIcon(port, slot);
-          return icon ? <img key={slot} src={icon} alt={`Port ${slot}`} className="player-port-icon" /> : null;
-        })}
-      </div>
-    </div>
-  );
-}
-
-function renderDynamicPlayerCell(player, fallbackIndex) {
-  const info = player || null;
-  const port = info?.port ?? fallbackIndex;
-  const characterImage = getCharacterStock(info?.character_id, info?.character_color);
-  const rankImage = getRankImage(info?.rank);
-  const rating = info?.rating ?? "--";
-  const displayName = info?.name || info?.display_name || info?.tag || info?.connect_code || "-";
-  const connectCode = info?.connect_code || "-";
-  const isWinner = info?.is_winner === 1;
-  const isCpu = Boolean(info?.is_cpu) || Number(info?.type) === 1;
+  const info = player;
+  const port = info.port ?? null;
+  const characterImage = getCharacterStock(info.character_id, info.character_color);
+  const rankImage = getRankImage(info.rank);
+  const rating = info.rating ?? "--";
+  const displayName = info.name || info.display_name || info.tag || info.connect_code || "-";
+  const connectCode = info.connect_code || "-";
+  const isWinner = info.is_winner === 1;
+  const isCpu = Boolean(info.is_cpu) || Number(info.type) === 1;
 
   return (
     <div className="player-cell">
@@ -613,6 +618,10 @@ function renderDynamicPlayerCell(player, fallbackIndex) {
   );
 }
 
+// Returns the players for a row, sorted by port. Both live-stream rows and
+// completed replay rows expose a normalized `players` array, so this is the
+// single source of truth the table renders from. The player_1_info/player_2_info
+// pair is only a legacy fallback for rows missing the array.
 function getRowPlayers(file) {
   const players = Array.isArray(file?.players) ? file.players : [];
   const normalized = players
@@ -637,56 +646,6 @@ function getRowPlayers(file) {
   ].filter(Boolean);
 }
 
-function streamPreviewName(player) {
-  if (!player) return null;
-  return player.display_name || player.tag || player.slippi_code || null;
-}
-
-function selectStreamPlayers(preview) {
-  const players = Array.isArray(preview) ? preview.filter((player) => player && typeof player === "object") : [];
-  const byPort = new Map();
-
-  for (const player of players) {
-    const port = Number(player?.port);
-    if (Number.isInteger(port) && port >= 1 && port <= 4 && !byPort.has(port)) {
-      byPort.set(port, player);
-    }
-  }
-
-  const p1 = byPort.get(1) || players[0] || null;
-  let p2 = byPort.get(2) || null;
-
-  if (!p2 && p1) {
-    p2 = players.find((player) => player !== p1 && Number(player?.port) !== Number(p1?.port)) || null;
-  }
-
-  return { p1, p2 };
-}
-
-function streamEventStatusLabel(status) {
-  switch ((status || "").toLowerCase()) {
-    case "controller_metadata":
-      return "Controller Metadata";
-    case "slippi_file_metadata":
-      return "Slippi File Metadata";
-    case "ended":
-    case "completed":
-      return "Ended";
-    case "pending_parse":
-      return "Pending Partial Parse";
-    case "failed":
-      return "Upload Failed";
-    case "incomplete":
-      return "Upload Incomplete";
-    case "abandoned":
-      return "Disconnected Before Upload";
-    case "started":
-      return "Stream Started";
-    default:
-      return "Streaming";
-  }
-}
-
 export default function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialFromUrl = parseFiltersFromSearch(searchParams);
@@ -705,91 +664,112 @@ export default function Home() {
   const [nowMs, setNowMs] = useState(Date.now());
   const sentinelRef = useRef(null);
   const latestCompletedEventMsRef = useRef(0);
-  const lastHeartbeatRefreshMsRef = useRef(0);
 
   const streamSourceRows = useMemo(
     () =>
       (streamStatus.sources || [])
-        .filter((source) => {
-          if (source.connected) {
-            return true;
-          }
+        // Show a source once its partial SLP has produced a player preview.
+        // Keep a just-disconnected source visible until its finalized upload row
+        // appears, avoiding a brief visual gap between live and final rows.
+        .filter(
+          (source) => {
+            if (source.connected) {
+              return true;
+            }
 
-          const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
-          if (Number.isNaN(updatedAtMs)) {
-            return false;
-          }
+            if (!Array.isArray(source.player_preview) || source.player_preview.length === 0) {
+              return false;
+            }
 
-          // Keep recently disconnected rows visible long enough to transition into uploaded files.
-          return nowMs - updatedAtMs < 20_000;
-        })
+            const sourceName = (source.source_name || "").trim();
+            if (!sourceName) {
+              return false;
+            }
+
+            const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
+            const terminalEventForSession = (streamStatus.events || []).some((event) => {
+              if ((event?.source_name || "").trim() !== sourceName) {
+                return false;
+              }
+
+              const status = String(event?.status || "").toLowerCase();
+              if (!["ended", "completed", "abandoned", "incomplete", "failed"].includes(status)) {
+                return false;
+              }
+
+              if (Number.isNaN(connectedAtMs)) {
+                return true;
+              }
+
+              const eventMs = event?.timestamp ? new Date(event.timestamp).getTime() : NaN;
+              return !Number.isNaN(eventMs) && eventMs >= connectedAtMs - 5000;
+            });
+
+            // If this source session already emitted a terminal event, hide the
+            // live row even when the finalized replay row is filtered out.
+            if (terminalEventForSession) {
+              return false;
+            }
+
+            const hasFinalizedRowForSession = files.some((file) => {
+              const fileSource = (file?.source_name || file?.collection_name || "").trim();
+              if (!fileSource || fileSource !== sourceName) {
+                return false;
+              }
+
+              if (Number.isNaN(connectedAtMs)) {
+                return true;
+              }
+
+              const birthMs = file?.birth_time ? new Date(file.birth_time).getTime() : NaN;
+              if (Number.isNaN(birthMs)) {
+                return false;
+              }
+
+              // Allow slight skew around session connect time when matching the
+              // newly finalized row that replaces this live row.
+              return birthMs >= connectedAtMs - 5000;
+            });
+
+            return !hasFinalizedRowForSession;
+          },
+        )
         .map((source) => {
-          const preview = Array.isArray(source.player_preview) ? source.player_preview : [];
-          const { p1, p2 } = selectStreamPlayers(preview);
-          const streamPlayers = preview
-            .slice()
-            .sort((a, b) => (Number(a?.port) || 99) - (Number(b?.port) || 99))
-            .map((player) => ({
-              name: streamPreviewName(player) || "-",
-              connect_code: player?.slippi_code || "-",
-              port: Number(player?.port) || null,
-              rank: player?.rank || null,
-              rating: player?.rating ?? null,
-              type: null,
-              is_cpu: false,
-              character_id: null,
-              character_color: null,
-              is_winner: null,
-            }));
-          const p1Name = streamPreviewName(p1) || "-";
-          const p2Name = streamPreviewName(p2) || "-";
+          // The stream-status API already returns player_preview in the same
+          // normalized shape as completed replays' `players`, so both row types
+          // flow through getRowPlayers/renderPlayerCell identically.
+          const players = Array.isArray(source.player_preview) ? source.player_preview : [];
           const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
           const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
           const lastActivityAtMs = source.last_activity_at ? new Date(source.last_activity_at).getTime() : NaN;
+          const endAtMs = !Number.isNaN(lastActivityAtMs)
+            ? lastActivityAtMs
+            : updatedAtMs;
           const durationBaseMs = !Number.isNaN(connectedAtMs)
             ? connectedAtMs
             : (!Number.isNaN(updatedAtMs) ? updatedAtMs : lastActivityAtMs);
+          const durationNowMs = source.connected ? nowMs : endAtMs;
           const playedAt = source.connected_at || source.updated_at || source.last_activity_at || null;
-          const gameDuration = source.connected
-            ? (Number.isNaN(durationBaseMs) ? 0 : Math.max(0, Math.floor((nowMs - durationBaseMs) / 1000)))
-            : null;
+          const gameDuration = Number.isNaN(durationBaseMs) || Number.isNaN(durationNowMs)
+            ? 0
+            : Math.max(0, Math.floor((durationNowMs - durationBaseMs) / 1000));
           return {
             id: null,
             _streaming: true,
             _streamKind: "source",
             _streamConnected: Boolean(source.connected),
             _streamKey: `${source.source_name}-${source.username}`,
-            player_1: p1Name,
-            player_2: p2Name,
-            player_1_info: p1
-              ? {
-                  name: p1Name,
-                  connect_code: p1.slippi_code || "-",
-                  port: Number(p1.port) || 1,
-                  rank: p1.rank || null,
-                  rating: p1.rating ?? null,
-                }
-              : null,
-            player_2_info: p2
-              ? {
-                  name: p2Name,
-                  connect_code: p2.slippi_code || "-",
-                  port: Number(p2.port) || 2,
-                  rank: p2.rank || null,
-                  rating: p2.rating ?? null,
-                }
-              : null,
+            players,
             stage: source.stage_preview ?? null,
             game_duration: gameDuration,
             datetime_played: playedAt,
             stream_source_name: source.source_name,
             stream_repositories: source.repositories || [],
             resolved_tournament_name: source.resolved_tournament_name || null,
-            players: streamPlayers,
             name: `live:${source.source_name}`,
           };
         }),
-    [streamStatus.sources, nowMs]
+    [streamStatus.sources, streamStatus.events, files, nowMs]
   );
 
   const tableRows = useMemo(
@@ -877,15 +857,14 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    let refreshTimer = null;
-    let periodicTimer = null;
 
     function maybeRefreshReplayList(events) {
-      const completedEvents = (events || []).filter((event) => {
+      const refreshStatuses = new Set(["pending_parse", "slippi_file_metadata", "ended", "completed"]);
+      const refreshEvents = (events || []).filter((event) => {
         const status = (event?.status || "").toLowerCase();
-        return status === "ended" || status === "completed";
+        return refreshStatuses.has(status);
       });
-      const newestCompletedEventMs = completedEvents.reduce((latest, event) => {
+      const newestRefreshEventMs = refreshEvents.reduce((latest, event) => {
         const ts = event?.timestamp ? new Date(event.timestamp).getTime() : NaN;
         if (Number.isNaN(ts)) {
           return latest;
@@ -893,67 +872,34 @@ export default function Home() {
         return Math.max(latest, ts);
       }, 0);
 
-      if (newestCompletedEventMs > latestCompletedEventMsRef.current) {
-        latestCompletedEventMsRef.current = newestCompletedEventMs;
+      if (newestRefreshEventMs > latestCompletedEventMsRef.current) {
+        latestCompletedEventMsRef.current = newestRefreshEventMs;
         void loadFirstPage();
       }
     }
-
-    async function refreshOnce() {
-      try {
-        const data = await fetchStreamStatus();
-        if (!active) {
-          return;
-        }
-
-        setStreamStatus(data);
-        setStreamError("");
-        maybeRefreshReplayList(data?.events || []);
-      } catch (err) {
-        if (active) {
-          setStreamError(err.message || "Failed to load stream status");
-        }
-      }
-    }
-
-    function scheduleRefresh() {
-      if (refreshTimer) {
-        clearTimeout(refreshTimer);
-      }
-      refreshTimer = setTimeout(() => {
-        void refreshOnce();
-      }, 150);
-    }
-
-    void refreshOnce();
 
     const stream = openStreamEvents((event) => {
       if (!active) {
         return;
       }
 
-      if (event.type === "snapshot") {
+      if (event.type === "snapshot" || event.type === "status") {
         try {
           const payload = JSON.parse(event.data || "{}");
-          setStreamStatus({
-            tournament: payload?.tournament || null,
-            sources: Array.isArray(payload?.sources) ? payload.sources : [],
-            events: Array.isArray(payload?.events) ? payload.events : [],
-          });
+          setStreamStatus((prev) =>
+            normalizeStreamStatusPayload(payload, Array.isArray(prev?.events) ? prev.events : [])
+          );
           setStreamError("");
-          maybeRefreshReplayList(payload?.events || []);
+          if (event.type === "snapshot") {
+            maybeRefreshReplayList(payload?.events || []);
+          }
         } catch {
-          scheduleRefresh();
+          setStreamError("Failed to parse stream status update");
         }
         return;
       }
 
       if (event.type === "heartbeat") {
-        const now = Date.now();
-        if (now - lastHeartbeatRefreshMsRef.current >= 10_000) {
-          lastHeartbeatRefreshMsRef.current = now;
-          scheduleRefresh();
-        }
         return;
       }
 
@@ -976,19 +922,29 @@ export default function Home() {
               events: nextEvents,
             };
           });
+          // Some environments intermittently miss `status` frames while still
+          // receiving `stream_event`. Re-sync sources from the status endpoint
+          // on each event so live rows appear/update without manual refresh.
+          void fetchStreamStatus()
+            .then((statusPayload) => {
+              if (!active) {
+                return;
+              }
+              setStreamStatus((prev) =>
+                normalizeStreamStatusPayload(statusPayload, Array.isArray(prev?.events) ? prev.events : [])
+              );
+            })
+            .catch(() => {
+              // Keep the existing SSE-driven state when status fetch fails.
+            });
           setStreamError("");
           maybeRefreshReplayList([payload]);
         } catch {
-          // Fall through to status refresh below.
+          setStreamError("Failed to parse stream event update");
         }
+        return;
       }
-
-      scheduleRefresh();
     });
-
-    periodicTimer = setInterval(() => {
-      void refreshOnce();
-    }, 10_000);
 
     stream.onerror = () => {
       if (!active) {
@@ -999,12 +955,6 @@ export default function Home() {
 
     return () => {
       active = false;
-      if (refreshTimer) {
-        clearTimeout(refreshTimer);
-      }
-      if (periodicTimer) {
-        clearInterval(periodicTimer);
-      }
       stream.close();
     };
   }, [loadFirstPage]);
@@ -1176,6 +1126,20 @@ export default function Home() {
               onChange={onFilterChange}
             />
             <input name="player" placeholder="Player" value={filters.player} onChange={onFilterChange} />
+            <label className="filter-checkbox-row">
+              <input
+                name="include_handwarmers"
+                type="checkbox"
+                checked={filters.include_handwarmers === "1"}
+                onChange={(e) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    include_handwarmers: e.target.checked ? "1" : "",
+                  }))
+                }
+              />
+              Include hand warmers
+            </label>
             <input name="date_from" type="date" value={filters.date_from} onChange={onFilterChange} />
             <input name="date_to" type="date" value={filters.date_to} onChange={onFilterChange} />
             <button type="button" className="filter-btn ghost" onClick={onResetFilters}>
@@ -1220,7 +1184,6 @@ export default function Home() {
                 )}
                 {tableRows.map((file) => {
                   const isStreamingRow = Boolean(file._streaming);
-                  const isStreamEventRow = Boolean(file._streamEvent);
                   const fileId = file.id ?? file._id;
                   const folderMeta = parseFolderMetadata(file.folder);
                   const resolvedTournamentName = getResolvedTournamentName(file);
@@ -1236,28 +1199,27 @@ export default function Home() {
                     )
                     : (resolvedTournamentName || folderMeta.repository || "-");
                   const sourceLabel = isStreamingRow
-                    ? (
-                      isStreamEventRow
-                        ? streamEventStatusLabel(file._streamStatus)
-                        : (file._streamConnected ? "Live stream" : "Disconnected stream")
-                    )
+                    ? "Live stream"
                     : (file.source_name || file.collection_name || folderMeta.source || "-");
-                  const streamBadgeLabel = isStreamEventRow
-                    ? "EVENT"
-                    : file._streamConnected
-                      ? "LIVE"
-                      : "RECENT";
+                  const streamBadgeLabel = "LIVE";
                   const rowPlayers = getRowPlayers(file).slice(0, tablePlayerColumnCount);
                   const paddedPlayers = [
                     ...rowPlayers,
                     ...Array.from({ length: Math.max(0, tablePlayerColumnCount - rowPlayers.length) }, () => null),
                   ];
+                  // Player, stage and start-datetime are populated the same way for
+                  // live and completed rows; only a stage placeholder differs while a
+                  // live game has no stage parsed yet.
+                  const startDateTime = file.datetime_played || file.birth_time;
+                  const stageLabel = file.stage !== null && file.stage !== undefined
+                    ? formatStageName(file.stage)
+                    : (isStreamingRow ? "Streaming" : formatStageName(file.stage));
                   return (
                   <tr
                     key={
                       isStreamingRow
                         ? `stream-${file._streamKey}`
-                        : `${file.name}-${file.datetime_played || "unknown"}-${file.player_1 || "p1"}`
+                        : `${file.name}-${file.datetime_played || "unknown"}-${rowPlayers[0]?.name || "p1"}`
                     }
                     className="stage-row"
                     style={getStageRowStyle(file.stage)}
@@ -1275,23 +1237,13 @@ export default function Home() {
                       </div>
                     </td>
                     {paddedPlayers.map((player, idx) => (
-                      <td key={`player-col-${idx}`}>{renderDynamicPlayerCell(player, idx + 1)}</td>
+                      <td key={`player-col-${idx}`}>{renderPlayerCell(player)}</td>
                     ))}
                     <td>
                       <div className="row-game-stack">
-                        <div className="row-game-stage">
-                          {isStreamingRow
-                            ? (
-                              isStreamEventRow
-                                ? streamEventStatusLabel(file._streamStatus)
-                                : (file.stage !== null && file.stage !== undefined
-                                  ? formatStageName(file.stage)
-                                  : (file._streamConnected ? "Streaming" : "Disconnected"))
-                            )
-                            : formatStageName(file.stage)}
-                        </div>
+                        <div className="row-game-stage">{stageLabel}</div>
                         <div className="row-game-duration">{formatGameDuration(file.game_duration)}</div>
-                        <div className="row-game-date">{formatPlayedDateTime(file.datetime_played || file.birth_time)}</div>
+                        <div className="row-game-date">{formatPlayedDateTime(startDateTime)}</div>
                       </div>
                     </td>
                     <td>

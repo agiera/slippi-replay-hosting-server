@@ -14,6 +14,7 @@ from app.models.game import Game
 from app.models.player import Player
 from app.models.repository import Repository
 from app.models.tournament_series import TournamentSeries
+from app.services.handwarmer import classify_handwarmer
 from app.services.peppi_ingest import parse_slippi_bytes, parse_slippi_stage_partial
 from app.services.slippi_profile import fetch_profile_by_connect_code
 from app.services.tournament_slug import resolve_tournament_name
@@ -397,6 +398,7 @@ def persist_replay_upload(
     db.flush()
 
     profile_cache: dict[str, object | None] = {}
+    handwarmer = classify_handwarmer(parsed_replay)
 
     def _lookup_profile(connect_code: str | None):
         if not connect_code:
@@ -415,6 +417,10 @@ def persist_replay_upload(
             stage=parsed_replay.stage,
             start_time=parsed_replay.start_time,
             last_frame=parsed_replay.last_frame,
+            handwarmer_label=handwarmer.label,
+            handwarmer_reason=handwarmer.reason,
+            handwarmer_score=handwarmer.score,
+            handwarmer_version=handwarmer.version,
         )
         db.add(game_row)
         db.flush()
@@ -453,6 +459,10 @@ def persist_replay_upload(
             stage=partial_stage,
             start_time=None,
             last_frame=None,
+            handwarmer_label=handwarmer.label,
+            handwarmer_reason=handwarmer.reason,
+            handwarmer_score=handwarmer.score,
+            handwarmer_version=handwarmer.version,
         )
         db.add(game_row)
         db.flush()

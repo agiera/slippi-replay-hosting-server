@@ -139,6 +139,7 @@ export async function fetchReplayFiles(params = {}) {
   if (params.tournament) search.set("tournament", params.tournament);
   if (params.source) search.set("source", params.source);
   if (params.collection) search.set("collection", params.collection);
+  if (params.include_handwarmers) search.set("include_handwarmers", String(params.include_handwarmers));
 
   const url = `${API_BASE}/replays/files${search.toString() ? `?${search.toString()}` : ""}`;
   const res = await fetch(url);
@@ -189,6 +190,7 @@ export function openStreamEvents(onEvent, { tournamentId } = {}) {
 
   if (typeof onEvent === "function") {
     eventSource.addEventListener("snapshot", onEvent);
+    eventSource.addEventListener("status", onEvent);
     eventSource.addEventListener("stream_event", onEvent);
     eventSource.addEventListener("heartbeat", onEvent);
   }

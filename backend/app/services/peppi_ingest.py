@@ -19,6 +19,7 @@ class ParsedReplayData:
     is_teams: int
     players: list[dict[str, Any]]
     peppi_bytes: bytes
+    end_method: str | None = None
 
 
 def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
@@ -52,21 +53,30 @@ def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
     if last_frame is None:
         # Some replays omit metadata.lastFrame but still include an end frame.
         last_frame = _coerce_int(getattr(getattr(game, "end", None), "frame", None))
+    end_method = _normalize_end_method(getattr(getattr(game, "end", None), "method", None))
     winners_by_port = _extract_winners_by_port(game)
+
+    # Extract controller firmware metadata (PhobGCC etc) written by nintendont
+    # to the SLP footer under metadata["players"]["0..3"].  Key is 0-indexed
+    # channel, value is a flat UBJSON string dict from the controller.
+    footer_ctrl_meta = _extract_footer_controller_metadata(metadata)
 
     players = []
     for player in game.start.players:
         port = _port_to_int(player.port)
         netplay = player.netplay
+        ctrl = footer_ctrl_meta.get(port, {})
         players.append(
             {
                 "port": port,
                 "type": _coerce_player_type(player.type),
                 "character_id": _coerce_int(player.character),
-                "connect_code": netplay.code if netplay else None,
-                "display_name": netplay.name if netplay else None,
-                "tag": player.name_tag,
+                "connect_code": (netplay.code if netplay else None) or ctrl.get("slippi_code"),
+                "display_name": (netplay.name if netplay else None) or ctrl.get("display_name"),
+                "tag": player.name_tag or ctrl.get("tag"),
                 "user_id": netplay.suid if netplay else None,
+                "startgg_id": ctrl.get("startgg_id"),
+                "parrygg_id": ctrl.get("parrygg_id"),
                 "is_winner": winners_by_port.get(port),
             }
         )
@@ -88,7 +98,101 @@ def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
         is_teams=1 if game.start.is_teams else 0,
         players=players,
         peppi_bytes=peppi_bytes,
+        end_method=end_method,
     )
+
+
+_CONTROLLER_METADATA_PORT_KEYS = {"port", "playerport", "playerindex"}
+
+
+def _controller_metadata_port_from_field(raw_port: object) -> int | None:
+    """Port taken from an explicit controller-metadata field.
+
+    A 1..4 value is the in-game port as authored; a 0..3 value is treated as a
+    0-indexed SI channel.
+    """
+    try:
+        parsed = int(str(raw_port).strip())
+    except (TypeError, ValueError):
+        return None
+    if 1 <= parsed <= 4:
+        return parsed
+    if 0 <= parsed <= 3:
+        return parsed + 1
+    return None
+
+
+def _controller_metadata_port_from_key(raw_key: object) -> int | None:
+    """Port derived from the UBJSON object key, a 0-indexed SI channel."""
+    try:
+        channel = int(str(raw_key).strip())
+    except (TypeError, ValueError):
+        return None
+    if 0 <= channel <= 3:
+        return channel + 1
+    return None
+
+
+def normalize_controller_metadata_players(raw_players: Any) -> dict[int, dict[str, str]]:
+    """Normalise a UBJSON ``players`` object into ``{port: normalised fields}``.
+
+    Shared by the live FTP streaming sidecar and the completed SLP footer parse so
+    both derive the player port identically. The port is taken from an explicit
+    ``port`` field inside each player's controller-metadata dict when present, and
+    otherwise falls back to the object key (a 0-indexed SI channel -> 1-indexed
+    port).
+    """
+    result: dict[int, dict[str, str]] = {}
+    if not isinstance(raw_players, dict):
+        return result
+
+    for key, player_meta in raw_players.items():
+        if not isinstance(player_meta, dict):
+            continue
+
+        normalized: dict[str, str] = {}
+        port_from_field: int | None = None
+        for field, value in player_meta.items():
+            key_norm = "".join(ch for ch in str(field).lower() if ch.isalnum())
+            if key_norm in _CONTROLLER_METADATA_PORT_KEYS:
+                if port_from_field is None:
+                    port_from_field = _controller_metadata_port_from_field(value)
+                continue
+            if not isinstance(value, str):
+                continue
+            if key_norm in {"nametag", "tag"}:
+                normalized["tag"] = value
+            elif key_norm in {"name", "displayname", "display"}:
+                normalized["display_name"] = value
+            elif key_norm in {"slippi", "slippicode", "connectcode", "code"}:
+                normalized["slippi_code"] = value
+            elif key_norm in {"smashgg", "startgg"}:
+                normalized["startgg_id"] = value
+            elif key_norm == "parrygg":
+                normalized["parrygg_id"] = value
+            elif key_norm == "firmware":
+                normalized["firmware"] = value
+
+        port = port_from_field if port_from_field is not None else _controller_metadata_port_from_key(key)
+        if port is None:
+            continue
+        if not normalized:
+            continue
+        result[port] = normalized
+
+    return result
+
+
+def _extract_footer_controller_metadata(metadata: Any) -> dict[int, dict[str, str]]:
+    """Extract PhobGCC/firmware controller metadata from the SLP footer players block.
+
+    SlippiFileWriter writes metadata["players"] as a UBJSON object keyed by
+    controller channel ("0".."3"); each value is a flat string dict from the
+    controller firmware. Returns a mapping of 1-indexed port -> normalised fields.
+    """
+    if not isinstance(metadata, dict):
+        return {}
+    return normalize_controller_metadata_players(metadata.get("players"))
 
 
 def _extract_metadata_from_slp_tail(data: bytes) -> dict[str, Any] | None:
@@ -185,6 +289,74 @@ def _parse_ubjson_length(data: bytes, start: int) -> tuple[int, int]:
     return length, start + 2
 
 
+@dataclass
+class ParsedReplayStart:
+    stage: int | None
+    players: list[dict[str, Any]]
+
+
+def parse_slippi_start_partial(data: bytes, suffix: str = ".slp") -> ParsedReplayStart | None:
+    """Extract stage and the start-of-game player list from a possibly-incomplete SLP.
+
+    The Game Start event sits at the very beginning of an SLP stream, so this works
+    on a partial upload that is still being transferred. It returns the same player
+    identity/character/type data the completed parse produces (minus winner info,
+    which is only known once the game ends). Returns None if no start block is found.
+    """
+    if not data:
+        return None
+
+    prefix_sizes = [len(data), 512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024, 16 * 1024]
+    tried: set[int] = set()
+
+    for size in prefix_sizes:
+        size = min(size, len(data))
+        if size <= 0 or size in tried:
+            continue
+        tried.add(size)
+
+        with NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data[:size])
+            temp_path = Path(tmp.name)
+
+        try:
+            try:
+                game = peppi_py.read_slippi(str(temp_path), skip_frames=True, allow_incomplete=True)
+            except TypeError:
+                game = peppi_py.read_slippi(str(temp_path), skip_frames=True)
+        except Exception:
+            continue
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        start = getattr(game, "start", None)
+        if start is None:
+            continue
+
+        stage = _coerce_int(getattr(start, "stage", None))
+        players: list[dict[str, Any]] = []
+        for player in getattr(start, "players", None) or []:
+            port = _port_to_int(player.port)
+            netplay = getattr(player, "netplay", None)
+            player_type = _coerce_player_type(player.type)
+            players.append(
+                {
+                    "port": port,
+                    "type": player_type,
+                    "is_cpu": player_type == 1,
+                    "character_id": _coerce_int(player.character),
+                    "connect_code": netplay.code if netplay else None,
+                    "display_name": netplay.name if netplay else None,
+                    "tag": player.name_tag or None,
+                }
+            )
+
+        if players or stage is not None:
+            return ParsedReplayStart(stage=stage, players=players)
+
+    return None
+
+
 def parse_slippi_stage_partial(data: bytes, suffix: str = ".slp") -> int | None:
     """Best-effort stage extraction from potentially incomplete/corrupt replay bytes.
 
@@ -268,6 +440,15 @@ def _extract_winners_by_port(game: Any) -> dict[int, int]:
 
     min_placement = min(placement for _, placement in placements)
     return {port: 1 if placement == min_placement else 0 for port, placement in placements}
+
+
+def _normalize_end_method(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, Enum):
+        return str(value.name).upper()
+    text = str(value).strip()
+    return text.upper() if text else None
 
 
 def _to_jsonable(value: Any) -> Any:

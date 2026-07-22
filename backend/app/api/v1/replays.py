@@ -244,6 +244,8 @@ def list_files(
     tournament: str | None = Query(None),
     source: str | None = Query(None),
     collection: str | None = Query(None),
+    handwarmer: str | None = Query(None),
+    include_handwarmers: int | None = Query(None, ge=0, le=1),
 ) -> ReplayFileListResponse:
     player_one = aliased(Player)
     player_two = aliased(Player)
@@ -379,6 +381,28 @@ def list_files(
             )
         conditions.append(or_(*source_clauses))
 
+    handwarmer_values = [value.lower() for value in _parse_csv_values(handwarmer)]
+    if handwarmer_values:
+        normalized_values = []
+        for value in handwarmer_values:
+            if value in {"real", "handwarmer", "unknown"}:
+                normalized_values.append(value)
+        if normalized_values:
+            conditions.append(Game.handwarmer_label.in_(normalized_values))
+    elif include_handwarmers != 1:
+        # Default behavior: hide likely handwarmers unless explicitly included.
+        # Rows without a parsed game/classification remain visible.
+        # Also hide legacy rows marked unknown due to insufficient human players.
+        conditions.append(
+            or_(
+                Game.handwarmer_label.is_(None),
+                and_(
+                    Game.handwarmer_label != "handwarmer",
+                    or_(Game.handwarmer_reason.is_(None), Game.handwarmer_reason != "insufficient_humans"),
+                ),
+            )
+        )
+
     rank_values = _parse_csv_values(rank)[:2]
 
     if conditions:
@@ -420,12 +444,32 @@ def list_files(
             player_two.rating.label("player_2_rating"),
             Game.stage.label("stage"),
             Game.last_frame.label("last_frame"),
+            Game.handwarmer_label.label("handwarmer_label"),
+            Game.handwarmer_reason.label("handwarmer_reason"),
+            Game.handwarmer_score.label("handwarmer_score"),
+            Game.handwarmer_version.label("handwarmer_version"),
             func.coalesce(Game.start_time, File.birth_time).label("datetime_played"),
         )
         .select_from(File)
         .join(Game, Game.file_id == File._id, isouter=True)
-        .join(player_one, and_(player_one.game_id == Game._id, player_one.port == 1), isouter=True)
-        .join(player_two, and_(player_two.game_id == Game._id, player_two.port == 2), isouter=True)
+        .join(
+            player_one,
+            and_(
+                player_one.game_id == Game._id,
+                player_one.port == select(func.min(Player.port)).where(Player.game_id == Game._id).scalar_subquery(),
+            ),
+            isouter=True,
+        )
+        .join(
+            player_two,
+            and_(
+                player_two.game_id == Game._id,
+                player_two.port == select(func.min(Player.port)).where(
+                    and_(Player.game_id == Game._id, Player.port > player_one.port)
+                ).scalar_subquery(),
+            ),
+            isouter=True,
+        )
         .where(File._id.in_(file_ids))
         .order_by(File._id.desc())
     ).all()
@@ -575,6 +619,10 @@ def list_files(
                     stage=None,
                     game_duration=None,
                     datetime_played=None,
+                    handwarmer_label=None,
+                    handwarmer_reason=None,
+                    handwarmer_score=None,
+                    handwarmer_version=None,
                 )
             )
             continue
@@ -663,6 +711,10 @@ def list_files(
                 stage=row.stage,
                 game_duration=duration_seconds,
                 datetime_played=row.datetime_played,
+                handwarmer_label=row.handwarmer_label,
+                handwarmer_reason=row.handwarmer_reason,
+                handwarmer_score=row.handwarmer_score,
+                handwarmer_version=row.handwarmer_version,
             )
         )
 
@@ -708,12 +760,13 @@ async def stream_events(
         "sources": jsonable_encoder(snapshot["sources"]),
         "events": jsonable_encoder(snapshot["events"]),
     }
+    sources_signature = json.dumps(payload["sources"], separators=(",", ":"), sort_keys=True)
 
     max_event_id = max((int(event.get("event_id", 0)) for event in snapshot["events"]), default=0)
     cursor = max(cursor, max_event_id)
 
     async def event_stream():
-        nonlocal cursor
+        nonlocal cursor, sources_signature
 
         yield f"event: snapshot\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
@@ -731,6 +784,18 @@ async def stream_events(
                 cursor = event_id
                 emitted = True
                 yield f"id: {event_id}\nevent: stream_event\ndata: {encoded}\n\n"
+
+            current_snapshot = get_stream_status_snapshot(source_names)
+            current_sources = jsonable_encoder(current_snapshot["sources"])
+            current_sources_signature = json.dumps(current_sources, separators=(",", ":"), sort_keys=True)
+            if current_sources_signature != sources_signature:
+                sources_signature = current_sources_signature
+                status_payload = {
+                    "tournament": payload["tournament"],
+                    "sources": current_sources,
+                }
+                yield f"event: status\ndata: {json.dumps(status_payload, separators=(',', ':'))}\n\n"
+                emitted = True
 
             heartbeat_counter += 1
             if not emitted and heartbeat_counter >= 15:
@@ -875,15 +940,33 @@ def get_stream_status(
     # Do not block stream polling on external profile lookups.
     profile_by_code: dict[str, object] = {}
 
+    enriched_sources: list[dict] = []
     for source_row in snapshot["sources"]:
+        source_payload = dict(source_row)
         enriched_preview = []
         for preview in source_row.get("player_preview") or []:
-            row = dict(preview)
-            profile = profile_by_code.get(row.get("slippi_code"))
-            row["rank"] = profile.rank if profile else None
-            row["rating"] = profile.rating if profile else None
-            enriched_preview.append(row)
-        source_row["player_preview"] = enriched_preview
+            slippi_code = preview.get("slippi_code")
+            profile = profile_by_code.get(slippi_code)
+            # Normalize the live preview into the exact same player shape the
+            # finished-replay endpoint returns, using the same name resolution
+            # (display_name -> tag -> connect_code). The controller sidecar only
+            # knows identity fields; character/type/winner are unknown until the
+            # SLP is parsed, so they stay null here.
+            enriched_preview.append(
+                {
+                    "name": preview.get("display_name") or preview.get("tag") or slippi_code,
+                    "connect_code": slippi_code,
+                    "character_id": preview.get("character_id"),
+                    "character_color": None,
+                    "port": preview.get("port"),
+                    "type": preview.get("type"),
+                    "is_cpu": bool(preview.get("is_cpu")),
+                    "is_winner": None,
+                    "rank": profile.rank if profile else None,
+                    "rating": profile.rating if profile else None,
+                }
+            )
+        source_payload["player_preview"] = enriched_preview
 
         source_name = source_row.get("source_name")
         repositories = source_row.get("repositories") or []
@@ -895,18 +978,22 @@ def get_stream_status(
             )
             if resolved_name:
                 break
-        source_row["resolved_tournament_name"] = resolved_name
+        source_payload["resolved_tournament_name"] = resolved_name
+        enriched_sources.append(source_payload)
 
+    enriched_events: list[dict] = []
     for event_row in snapshot["events"]:
+        event_payload = dict(event_row)
         source_name = event_row.get("source_name")
         repository_name = event_row.get("repository")
-        event_row["resolved_tournament_name"] = (
+        event_payload["resolved_tournament_name"] = (
             resolved_tournament_by_repo_source.get((repository_name, source_name))
             or resolved_tournament_by_repo.get(repository_name)
         )
+        enriched_events.append(event_payload)
 
     return StreamStatusResponse(
         tournament=TournamentSeriesPublic.model_validate(tournament) if tournament else None,
-        sources=snapshot["sources"],
-        events=snapshot["events"],
+        sources=enriched_sources,
+        events=enriched_events,
     )

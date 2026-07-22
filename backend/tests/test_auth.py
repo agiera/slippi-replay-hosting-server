@@ -93,8 +93,26 @@ def test_public_files_endpoint_supports_filters_and_pagination(client, db_sessio
     db_session.add_all([file_one, file_two])
     db_session.flush()
 
-    game_one = Game(file_id=file_one._id, is_ranked=1, is_teams=0, start_time="2024-01-01T12:00:00Z")
-    game_two = Game(file_id=file_two._id, is_ranked=0, is_teams=0, start_time="2024-02-01T12:00:00Z")
+    game_one = Game(
+        file_id=file_one._id,
+        is_ranked=1,
+        is_teams=0,
+        start_time="2024-01-01T12:00:00Z",
+        handwarmer_label="real",
+        handwarmer_reason="duration_or_winner",
+        handwarmer_score=0.8,
+        handwarmer_version=1,
+    )
+    game_two = Game(
+        file_id=file_two._id,
+        is_ranked=0,
+        is_teams=0,
+        start_time="2024-02-01T12:00:00Z",
+        handwarmer_label="handwarmer",
+        handwarmer_reason="short_unresolved",
+        handwarmer_score=0.9,
+        handwarmer_version=1,
+    )
     db_session.add_all([game_one, game_two])
     db_session.flush()
 
@@ -103,11 +121,17 @@ def test_public_files_endpoint_supports_filters_and_pagination(client, db_sessio
     db_session.add_all([player_one, player_two])
     db_session.commit()
 
-    page_res = client.get("/api/v1/replays/files", params={"limit": 1})
+    page_res = client.get("/api/v1/replays/files", params={"limit": 1, "include_handwarmers": 1})
     assert page_res.status_code == 200
     page_body = page_res.json()
     assert len(page_body["items"]) == 1
     assert page_body["next_cursor"] is not None
+
+    default_res = client.get("/api/v1/replays/files")
+    assert default_res.status_code == 200
+    default_items = default_res.json()["items"]
+    assert len(default_items) == 1
+    assert default_items[0]["name"] == "one.slp"
 
     keyword_res = client.get("/api/v1/replays/files", params={"keyword": "ranked"})
     assert keyword_res.status_code == 200
@@ -118,6 +142,19 @@ def test_public_files_endpoint_supports_filters_and_pagination(client, db_sessio
     assert keyword_items[0]["player_2"] is None
     assert keyword_items[0]["stage"] is None
     assert keyword_items[0]["game_duration"] is None
+    assert keyword_items[0]["handwarmer_label"] == "real"
+
+    hw_res = client.get("/api/v1/replays/files", params={"handwarmer": "handwarmer"})
+    assert hw_res.status_code == 200
+    hw_items = hw_res.json()["items"]
+    assert len(hw_items) == 1
+    assert hw_items[0]["name"] == "two.slp"
+    assert hw_items[0]["handwarmer_label"] == "handwarmer"
+
+    include_hw_res = client.get("/api/v1/replays/files", params={"include_handwarmers": 1})
+    assert include_hw_res.status_code == 200
+    include_hw_items = include_hw_res.json()["items"]
+    assert len(include_hw_items) == 2
     assert keyword_items[0]["datetime_played"] == "2024-01-01T12:00:00Z"
 
     ranked_res = client.get("/api/v1/replays/files", params={"ranked": 1})
@@ -126,7 +163,7 @@ def test_public_files_endpoint_supports_filters_and_pagination(client, db_sessio
     assert len(ranked_items) == 1
     assert ranked_items[0]["name"] == "one.slp"
 
-    player_res = client.get("/api/v1/replays/files", params={"player": "zain"})
+    player_res = client.get("/api/v1/replays/files", params={"player": "zain", "include_handwarmers": 1})
     assert player_res.status_code == 200
     player_items = player_res.json()["items"]
     assert len(player_items) == 1

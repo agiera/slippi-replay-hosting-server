@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.replay import ReplayPlayerPublic
+
 
 class TournamentSeriesPublic(BaseModel):
     id: int
@@ -43,16 +45,6 @@ class SourcePublic(BaseModel):
     username: str
 
 
-class LiveSourcePlayerPreviewPublic(BaseModel):
-    port: int | None = None
-    display_name: str | None = None
-    tag: str | None = None
-    slippi_code: str | None = None
-    firmware: str | None = None
-    rank: str | None = None
-    rating: int | None = None
-
-
 class LiveSourceStatusPublic(BaseModel):
     source_name: str
     username: str
@@ -64,7 +56,7 @@ class LiveSourceStatusPublic(BaseModel):
     updated_at: datetime | None = None
     last_activity_at: datetime | None = None
     stream_phase: str | None = None
-    player_preview: list[LiveSourcePlayerPreviewPublic] = Field(default_factory=list)
+    player_preview: list[ReplayPlayerPublic] = Field(default_factory=list)
 
 
 class LiveReplayEventPublic(BaseModel):

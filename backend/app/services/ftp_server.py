@@ -22,6 +22,10 @@ from app.models.game import Game
 from app.models.player import Player
 from app.models.source_metadata import SourceMetadata
 from app.models.user import User
+from app.services.peppi_ingest import (
+    normalize_controller_metadata_players,
+    parse_slippi_start_partial,
+)
 from app.services.replay_upload import persist_replay_upload
 
 
@@ -63,47 +67,12 @@ class SourceTokenAuthorizer(DummyAuthorizer):
 
 
 class ReplayFTPHandler(FTPHandler):
-    proto_cmds = FTPHandler.proto_cmds.copy()
-    proto_cmds.update(
-        {
-            "SITE SLPMETA": {
-                "perm": None,
-                "auth": True,
-                "arg": True,
-                "help": "Syntax: SITE SLPMETA <SP> json-payload (set staged Slippi metadata override).",
-            },
-            "SITE SLPMETAUBJ": {
-                "perm": None,
-                "auth": True,
-                "arg": True,
-                "help": "Syntax: SITE SLPMETAUBJ <SP> hex-ubjson (set staged Slippi metadata override).",
-            },
-            "SITE SLPMETAUBJSON": {
-                "perm": None,
-                "auth": True,
-                "arg": True,
-                "help": "Syntax: SITE SLPMETAUBJSON <SP> hex-ubjson (set staged Slippi metadata override).",
-            },
-            "SITE CLEARSLPMETA": {
-                "perm": None,
-                "auth": True,
-                "arg": None,
-                "help": "Syntax: SITE CLEARSLPMETA (clear staged Slippi metadata override).",
-            },
-            "SITE SLPMETA_CLEAR": {
-                "perm": None,
-                "auth": True,
-                "arg": None,
-                "help": "Syntax: SITE SLPMETA_CLEAR (clear staged Slippi metadata override).",
-            },
-        }
-    )
-
     ftp_session: FTPSessionContext | None = None
     metadata_override: dict | None = None
     _session_transfer_attempted: bool = False
     _session_replay_transfer_attempted: bool = False
     _pending_metadata_by_replay_name: dict[str, dict] = {}
+    _partial_parse_stop: threading.Event | None = None
 
     def pre_process_command(self, line: str, cmd: str, arg: str) -> None:
         try:
@@ -126,12 +95,9 @@ class ReplayFTPHandler(FTPHandler):
             flush=True,
         )
         _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
-        if self.metadata_override:
-            _set_source_player_preview(
-                context.source_name,
-                self.metadata_override.get("players") or [],
-                stage=self.metadata_override.get("stage"),
-            )
+        # Do not seed a live preview from the sidecar/override. The live row is only
+        # shown once the partial SLP parse yields real players + stage, so the brief
+        # controller-metadata-only state is never displayed.
         _record_stream_event(
             source_name=context.source_name,
             username=context.username,
@@ -140,53 +106,6 @@ class ReplayFTPHandler(FTPHandler):
             status="started",
         )
         super().on_login(username)
-
-    def ftp_SITE(self, line: str) -> None:
-        print(f"[FTP][TRACE] SITE raw='{line}'", flush=True)
-        if not line:
-            self.respond("501 SITE requires a command")
-            return
-
-        normalized_line = line.strip()
-        # Some clients/handlers can pass "SITE ..." as the line payload.
-        if normalized_line.upper().startswith("SITE "):
-            normalized_line = normalized_line[5:].strip()
-        if not normalized_line:
-            self.respond("501 SITE requires a command")
-            return
-
-        command, _, rest = normalized_line.partition(" ")
-        normalized_command = command.strip().upper()
-
-        if normalized_command == "SLPMETA":
-            self._handle_site_slpmeta(rest.strip())
-            return
-
-        if normalized_command in {"SLPMETAUBJ", "SLPMETAUBJSON"}:
-            self._handle_site_slpmeta_ubjson(rest.strip())
-            return
-
-        if normalized_command in {"CLEARSLPMETA", "SLPMETA_CLEAR"}:
-            self.metadata_override = None
-            if self.ftp_session is not None:
-                _clear_source_metadata_override(self.ftp_session.source_name)
-            self.respond("200 Cleared staged Slippi metadata override")
-            return
-
-        super().ftp_SITE(line)
-
-    # pyftpdlib may dispatch SITE subcommands directly via ftp_SITE_<SUBCMD>.
-    def ftp_SITE_SLPMETA(self, line: str) -> None:
-        print(f"[FTP][TRACE] SITE SLPMETA arg='{line}'", flush=True)
-        self._handle_site_slpmeta(self._normalize_site_subcommand_arg(line, "SLPMETA"))
-
-    def ftp_SITE_SLPMETAUBJ(self, line: str) -> None:
-        print(f"[FTP][TRACE] SITE SLPMETAUBJ arg_len={len(line or '')}", flush=True)
-        self._handle_site_slpmeta_ubjson(self._normalize_site_subcommand_arg(line, "SLPMETAUBJ"))
-
-    def ftp_SITE_SLPMETAUBJSON(self, line: str) -> None:
-        print(f"[FTP][TRACE] SITE SLPMETAUBJSON arg_len={len(line or '')}", flush=True)
-        self._handle_site_slpmeta_ubjson(self._normalize_site_subcommand_arg(line, "SLPMETAUBJSON"))
 
     def ftp_TYPE(self, line: str) -> None:
         print(f"[FTP][TRACE] TYPE {line}", flush=True)
@@ -218,124 +137,36 @@ class ReplayFTPHandler(FTPHandler):
         except Exception as exc:
             print(f"[FTP][TRACE] STOR mkdir failed for '{file}': {exc}", flush=True)
         print(f"[FTP][TRACE] STOR file='{file}' mode='{mode}'", flush=True)
+        # For a live replay upload, parse the partial SLP as it streams in so the
+        # live row shows the same players + stage the finished row will (the
+        # controller sidecar alone lacks CPUs, characters and stage).
+        if self.ftp_session is not None and not self._is_metadata_sidecar_filename(file):
+            self._start_live_partial_parse(Path(str(file)), self.ftp_session.source_name)
         super().ftp_STOR(file, mode)
 
-    def ftp_SITE_CLEARSLPMETA(self, _line: str) -> None:
-        self.metadata_override = None
-        if self.ftp_session is not None:
-            _clear_source_metadata_override(self.ftp_session.source_name)
-        self.respond("200 Cleared staged Slippi metadata override")
+    def _start_live_partial_parse(self, staged_path: Path, source_name: str) -> None:
+        stop_event = threading.Event()
+        self._stop_live_partial_parse()
+        self._partial_parse_stop = stop_event
+        worker = threading.Thread(
+            target=_live_partial_parse_worker,
+            args=(staged_path, source_name, stop_event),
+            daemon=True,
+        )
+        worker.start()
 
-    def ftp_SITE_SLPMETA_CLEAR(self, _line: str) -> None:
-        self.metadata_override = None
-        if self.ftp_session is not None:
-            _clear_source_metadata_override(self.ftp_session.source_name)
-        self.respond("200 Cleared staged Slippi metadata override")
-
-    def _handle_site_slpmeta(self, raw_json: str) -> None:
-        if not raw_json:
-            self.respond("501 Usage: SITE SLPMETA {\"stage\":31,\"players\":[...]}")
-            return
-
-        try:
-            payload = json.loads(raw_json)
-        except json.JSONDecodeError:
-            self.respond("501 Invalid JSON payload for SITE SLPMETA")
-            return
-
-        self._apply_metadata_override(payload)
-
-    @staticmethod
-    def _normalize_site_subcommand_arg(raw_line: str, subcommand: str) -> str:
-        normalized = (raw_line or "").strip()
-        upper = normalized.upper()
-        subcommand_upper = subcommand.upper()
-
-        if upper.startswith("SITE "):
-            normalized = normalized[5:].strip()
-            upper = normalized.upper()
-
-        if upper == subcommand_upper:
-            return ""
-
-        prefix = f"{subcommand_upper} "
-        if upper.startswith(prefix):
-            return normalized[len(prefix):].strip()
-
-        return normalized
-
-    def _handle_site_slpmeta_ubjson(self, raw_hex: str) -> None:
-        if not raw_hex:
-            self.respond("501 Usage: SITE SLPMETAUBJ <hex-encoded-ubjson>")
-            return
-
-        try:
-            ubjson_payload = binascii.unhexlify(raw_hex.encode("ascii"))
-        except (ValueError, binascii.Error):
-            self.respond("501 Invalid hex payload for SITE SLPMETAUBJ")
-            return
-
-        try:
-            payload = _decode_site_slpmeta_ubjson(ubjson_payload)
-        except ValueError as exc:
-            self.respond(f"501 Invalid UBJSON payload for SITE SLPMETAUBJ: {exc}")
-            return
-
-        self._apply_metadata_override(payload)
-
-    def _apply_metadata_override(self, payload: dict) -> None:
-
-        if not isinstance(payload, dict):
-            self.respond("501 SITE SLPMETA payload must be an object")
-            return
-
-        stage = payload.get("stage")
-        if stage is not None:
-            try:
-                int(stage)
-            except (TypeError, ValueError):
-                self.respond("501 stage must be an integer")
-                return
-
-        players = payload.get("players")
-        if players is not None and not isinstance(players, list):
-            self.respond("501 players must be a JSON array")
-            return
-
-        if isinstance(players, list):
-            for idx, player in enumerate(players):
-                if not isinstance(player, dict):
-                    self.respond(f"501 players[{idx}] must be an object")
-                    return
-                if "port" not in player:
-                    self.respond(f"501 players[{idx}] requires 'port'")
-                    return
-                port_value = player.get("port")
-                try:
-                    port = int(port_value)
-                except (TypeError, ValueError):
-                    self.respond(f"501 players[{idx}].port must be an integer")
-                    return
-                if port < 1 or port > 4:
-                    self.respond(f"501 players[{idx}].port must be between 1 and 4")
-                    return
-
-        self.metadata_override = payload
-        if self.ftp_session is not None:
-            _store_source_metadata_override(self.ftp_session.source_name, payload)
-            players_payload = payload.get("players")
-            if isinstance(players_payload, list) and players_payload:
-                _set_source_player_preview(
-                    self.ftp_session.source_name,
-                    players_payload,
-                    stage=payload.get("stage"),
-                )
-        self.respond("200 Applied Slippi metadata override for subsequent uploads")
+    def _stop_live_partial_parse(self) -> None:
+        if self._partial_parse_stop is not None:
+            self._partial_parse_stop.set()
+            self._partial_parse_stop = None
 
     def on_file_received(self, file: str) -> None:
         staged_path = Path(file)
         repository_name = "unknown"
         self._session_transfer_attempted = True
+        # The transfer finished; the full-file parse below supersedes the live
+        # partial-parse worker, so stop it.
+        self._stop_live_partial_parse()
         try:
             if self.ftp_session is None:
                 return
@@ -344,15 +175,32 @@ class ReplayFTPHandler(FTPHandler):
             data = staged_path.read_bytes()
 
             if self._is_metadata_sidecar_filename(original_name):
-                payload = _decode_uploaded_metadata_sidecar(data)
+                try:
+                    payload = _decode_uploaded_metadata_sidecar(data)
+                    payload = _normalize_metadata_override_payload(payload)
+                except (ValueError, Exception) as exc:
+                    import sys
+                    print(f"[FTP][ERROR] Failed to decode/normalize sidecar '{original_name}': {exc}", file=sys.stderr, flush=True)
+                    return
+                
+                _log_controller_metadata_payload(
+                    "SIDECAR",
+                    payload,
+                    source_name=self.ftp_session.source_name,
+                    filename=original_name,
+                )
                 replay_name = self._replay_name_from_metadata_sidecar(original_name)
                 self._pending_metadata_by_replay_name[replay_name] = payload
                 self.metadata_override = payload
                 _store_source_metadata_override(self.ftp_session.source_name, payload)
+                # The SLP metadata defines which players show up. The sidecar only
+                # enriches ports that already exist in that roster (e.g. controller
+                # firmware); ports present only in the sidecar are omitted.
                 _set_source_player_preview(
                     self.ftp_session.source_name,
                     payload.get("players") or [],
                     stage=payload.get("stage"),
+                    enrich_only=True,
                 )
                 _record_stream_event(
                     source_name=self.ftp_session.source_name,
@@ -368,75 +216,13 @@ class ReplayFTPHandler(FTPHandler):
                 return
 
             replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
-            if replay_metadata_override is not None:
-                self.metadata_override = replay_metadata_override
-                _set_source_player_preview(
-                    self.ftp_session.source_name,
-                    replay_metadata_override.get("players") or [],
-                    stage=replay_metadata_override.get("stage"),
-                )
-
             self._session_replay_transfer_attempted = True
 
-            repository_name = self._resolve_repository_for_path(staged_path)
-            with SessionLocal() as db:
-                token_row = db.scalar(
-                    select(ApiToken)
-                    .options(selectinload(ApiToken.repositories))
-                    .where(ApiToken.id == self.ftp_session.token_id)
-                )
-                if token_row is None or token_row.revoked_at is not None:
-                    raise AuthenticationFailed("Source token was revoked")
-
-                row = persist_replay_upload(
-                    db,
-                    token_row=token_row,
-                    repository_name=repository_name,
-                    original_name=original_name,
-                    data=data,
-                    metadata_override=replay_metadata_override or self.metadata_override,
-                )
-                if self.ftp_session is not None:
-                    refreshed_override = _refresh_source_metadata_from_file(
-                        db,
-                        source_name=self.ftp_session.source_name,
-                        file_id=row._id,
-                    )
-                    if refreshed_override:
-                        self.metadata_override = refreshed_override
-                        _set_source_player_preview(
-                            self.ftp_session.source_name,
-                            refreshed_override.get("players") or [],
-                            stage=refreshed_override.get("stage"),
-                        )
-                db.commit()
-
-            parsed_slippi = _is_parsed_slippi_filename(row.name)
-            if parsed_slippi:
-                _record_stream_event(
-                    source_name=self.ftp_session.source_name,
-                    username=self.ftp_session.username,
-                    repository=repository_name,
-                    filename=original_name,
-                    status="slippi_file_metadata",
-                )
-                _record_stream_event(
-                    source_name=self.ftp_session.source_name,
-                    username=self.ftp_session.username,
-                    repository=repository_name,
-                    filename=original_name,
-                    status="ended",
-                )
-            else:
-                _record_stream_event(
-                    source_name=self.ftp_session.source_name,
-                    username=self.ftp_session.username,
-                    repository=repository_name,
-                    filename=original_name,
-                    status="pending_parse",
-                )
-
-            print(f"[FTP] Uploaded {original_name} to repository '{repository_name}'", flush=True)
+            self._persist_replay_and_record(
+                original_name=original_name,
+                data=data,
+                replay_metadata_override=replay_metadata_override,
+            )
         except Exception as exc:
             if self.ftp_session is not None:
                 _record_stream_event(
@@ -453,7 +239,86 @@ class ReplayFTPHandler(FTPHandler):
             except Exception:
                 pass
 
+    def _persist_replay_and_record(
+        self,
+        *,
+        original_name: str,
+        data: bytes,
+        replay_metadata_override: dict | None,
+    ) -> None:
+        """Persist a replay row and emit its stream events.
+
+        The controller-metadata sidecar (when sent) always arrives before the
+        .slp on the same session, so any pending override is already applied here.
+        """
+        if self.ftp_session is None:
+            return
+
+        if replay_metadata_override is not None:
+            self.metadata_override = replay_metadata_override
+
+        repository_name = self.ftp_session.repository_name
+        with SessionLocal() as db:
+            token_row = db.scalar(
+                select(ApiToken)
+                .options(selectinload(ApiToken.repositories))
+                .where(ApiToken.id == self.ftp_session.token_id)
+            )
+            if token_row is None or token_row.revoked_at is not None:
+                raise AuthenticationFailed("Source token was revoked")
+
+            row = persist_replay_upload(
+                db,
+                token_row=token_row,
+                repository_name=repository_name,
+                original_name=original_name,
+                data=data,
+                metadata_override=replay_metadata_override or self.metadata_override,
+            )
+            refreshed_override = _refresh_source_metadata_from_file(
+                db,
+                source_name=self.ftp_session.source_name,
+                file_id=row._id,
+            )
+            if refreshed_override:
+                self.metadata_override = refreshed_override
+                _set_source_player_preview(
+                    self.ftp_session.source_name,
+                    refreshed_override.get("players") or [],
+                    stage=refreshed_override.get("stage"),
+                )
+            db.commit()
+            row_name = row.name
+
+        parsed_slippi = _is_parsed_slippi_filename(row_name)
+        if parsed_slippi:
+            _record_stream_event(
+                source_name=self.ftp_session.source_name,
+                username=self.ftp_session.username,
+                repository=repository_name,
+                filename=original_name,
+                status="slippi_file_metadata",
+            )
+            _record_stream_event(
+                source_name=self.ftp_session.source_name,
+                username=self.ftp_session.username,
+                repository=repository_name,
+                filename=original_name,
+                status="ended",
+            )
+        else:
+            _record_stream_event(
+                source_name=self.ftp_session.source_name,
+                username=self.ftp_session.username,
+                repository=repository_name,
+                filename=original_name,
+                status="pending_parse",
+            )
+
+        print(f"[FTP] Uploaded {original_name} to repository '{repository_name}'", flush=True)
+
     def on_incomplete_file_received(self, file: str) -> None:
+        self._stop_live_partial_parse()
         self._session_transfer_attempted = True
         if not self._is_metadata_sidecar_filename(Path(file).name):
             self._session_replay_transfer_attempted = True
@@ -471,6 +336,7 @@ class ReplayFTPHandler(FTPHandler):
             pass
 
     def on_disconnect(self) -> None:
+        self._stop_live_partial_parse()
         if self.ftp_session is not None:
             print(
                 f"[FTP][TRACE] Disconnect source='{self.ftp_session.source_name}' transfer_attempted={self._session_transfer_attempted}",
@@ -524,27 +390,13 @@ def _decode_site_slpmeta_ubjson(data: bytes) -> dict:
     if pos != len(data):
         raise ValueError("unexpected trailing bytes")
 
+    # Shared with the completed SLP footer parse so the live and completed rows
+    # derive the player port identically (from the metadata port field, falling
+    # back to the 0-indexed channel key).
+    by_port = normalize_controller_metadata_players(payload)
     players: list[dict] = []
-    for port_key, player_meta in payload.items():
-        if not isinstance(player_meta, dict):
-            continue
-        try:
-            parsed_port = int(str(port_key))
-        except ValueError:
-            continue
-
-        # Wii metadata is keyed by 0..3, while replay overrides expect 1..4.
-        port = parsed_port + 1 if 0 <= parsed_port <= 3 else parsed_port
-        if port < 1 or port > 4:
-            continue
-
-        normalized_player = _normalize_ubjson_player_fields(player_meta)
-        if not normalized_player:
-            continue
-        normalized_player["port"] = port
-        players.append(normalized_player)
-
-    players.sort(key=lambda player: int(player.get("port", 0)))
+    for port in sorted(by_port.keys()):
+        players.append({**by_port[port], "port": port})
     return {"players": players}
 
 
@@ -568,6 +420,131 @@ def _decode_uploaded_metadata_sidecar(raw_data: bytes) -> dict:
         return _decode_site_slpmeta_ubjson(ubjson_payload)
 
     return payload
+
+
+def _coerce_metadata_port_from_field(raw_port: object) -> int | None:
+    try:
+        parsed = int(str(raw_port))
+    except (TypeError, ValueError):
+        return None
+
+    if 1 <= parsed <= 4:
+        return parsed
+    if 0 <= parsed <= 3:
+        return parsed + 1
+    return None
+
+
+def _coerce_metadata_port_from_hint(raw_port: object) -> int | None:
+    try:
+        parsed = int(str(raw_port))
+    except (TypeError, ValueError):
+        return None
+
+    if 0 <= parsed <= 3:
+        return parsed + 1
+    if 1 <= parsed <= 4:
+        return parsed
+    return None
+
+
+def _infer_metadata_port(player: dict, *, key_hint: object | None, list_index: int | None) -> int | None:
+    for field in ("port", "player_port", "playerPort", "player_index", "playerIndex"):
+        port = _coerce_metadata_port_from_field(player.get(field))
+        if port is not None:
+            return port
+
+    if key_hint is not None:
+        port = _coerce_metadata_port_from_hint(key_hint)
+        if port is not None:
+            return port
+
+    if list_index is not None:
+        return _coerce_metadata_port_from_hint(list_index)
+
+    return None
+
+
+def _normalize_metadata_override_payload(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("metadata override payload must be a JSON object")
+
+    out: dict[str, object] = {}
+
+    stage = payload.get("stage")
+    if stage is not None:
+        try:
+            out["stage"] = int(stage)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("stage must be an integer") from exc
+
+    raw_players = payload.get("players")
+    if raw_players is not None:
+        if isinstance(raw_players, dict):
+            entries = [(key, value, None) for key, value in raw_players.items()]
+        elif isinstance(raw_players, list):
+            entries = [(None, value, index) for index, value in enumerate(raw_players)]
+        else:
+            raise ValueError("players must be a JSON array or object")
+
+        by_port: dict[int, dict] = {}
+        for key_hint, raw_player, list_index in entries:
+            if not isinstance(raw_player, dict):
+                continue
+
+            port = _infer_metadata_port(raw_player, key_hint=key_hint, list_index=list_index)
+            if port is None:
+                continue
+
+            normalized_player = dict(raw_player)
+            normalized_player["port"] = port
+            by_port[port] = normalized_player
+
+        out["players"] = [by_port[port] for port in sorted(by_port.keys())]
+
+    return out
+
+
+def _log_controller_metadata_payload(
+    origin: str,
+    payload: dict,
+    *,
+    source_name: str | None = None,
+    filename: str | None = None,
+) -> None:
+    import sys
+    players = payload.get("players") if isinstance(payload, dict) else None
+    player_lines: list[str] = []
+
+    if isinstance(players, list):
+        for player in players:
+            if not isinstance(player, dict):
+                continue
+            port = player.get("port")
+            display_name = player.get("display_name") or player.get("name") or "-"
+            tag = player.get("tag") or player.get("nametag") or "-"
+            code = player.get("slippi_code") or player.get("connect_code") or "-"
+            firmware = player.get("firmware") or "-"
+            player_lines.append(
+                f"port={port} display={display_name} tag={tag} code={code} firmware={firmware}"
+            )
+
+    stage = payload.get("stage") if isinstance(payload, dict) else None
+    context_parts = [f"origin={origin}"]
+    if source_name:
+        context_parts.append(f"source={source_name}")
+    if filename:
+        context_parts.append(f"filename={filename}")
+
+    print(
+        f"[FTP][META] {' '.join(context_parts)} stage={stage} players={len(player_lines)}",
+        file=sys.stderr,
+        flush=True,
+    )
+    raw_payload = json.dumps(payload, indent=2, sort_keys=True)
+    print(f"[FTP][META][RAW] {raw_payload}", file=sys.stderr, flush=True)
+    for line in player_lines:
+        print(f"[FTP][META]   {line}", file=sys.stderr, flush=True)
 
 
 def _normalize_ubjson_player_fields(player_meta: dict) -> dict:
@@ -676,22 +653,22 @@ def _is_parsed_slippi_filename(filename: str | None) -> bool:
 def _set_source_connection_state(source_name: str, username: str, repositories: set[str], connected: bool) -> None:
     with _stream_state_lock:
         if connected:
-            existing_preview = []
-            existing_stage_preview = None
             existing_last_completed_at = None
             if source_name in _source_connections:
-                existing_preview = list(_source_connections[source_name].get("player_preview") or [])
-                existing_stage_preview = _source_connections[source_name].get("stage_preview")
                 existing_last_completed_at = _source_connections[source_name].get("last_completed_at")
             now = datetime.now(timezone.utc)
+            # A new connection represents a new game upload; start the live preview
+            # fresh so stale ports from a previous game do not linger and merge.
             _source_connections[source_name] = {
                 "source_name": source_name,
                 "username": username,
                 "repositories": sorted(repositories),
                 "connected": True,
                 "updated_at": now,
-                "player_preview": existing_preview,
-                "stage_preview": existing_stage_preview,
+                "player_preview": [],
+                "stage_preview": None,
+                "pending_enrichment": {},
+                "preview_seeded_from_enrichment": False,
                 "connected_at": now,
                 "last_activity_at": now,
                 "last_completed_at": existing_last_completed_at,
@@ -703,7 +680,61 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 _source_connections[source_name]["updated_at"] = datetime.now(timezone.utc)
 
 
-def _set_source_player_preview(source_name: str, players: list[dict], *, stage: int | None = None) -> None:
+def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: threading.Event) -> None:
+    """Poll a live, still-uploading SLP file and feed its start block into the preview.
+
+    Runs in a daemon thread while the replay streams in. The Game Start block sits at
+    the very beginning of the file, so once enough bytes have arrived we can extract
+    the full player list (including CPUs and characters) and stage, then stop. This
+    makes the live row match the finished row that the later full parse produces.
+    """
+    # Keep polling for the lifetime of this STOR session. Some clients open STOR
+    # early but do not flush bytes to disk until much later, so a short fixed
+    # attempt window can miss the first readable bytes and delay live updates
+    # until final ingest.
+    poll_seconds = 0.35
+    while True:
+        if stop_event.is_set():
+            return
+        try:
+            data = staged_path.read_bytes()
+        except OSError:
+            data = b""
+
+        if data:
+            try:
+                parsed = parse_slippi_start_partial(data, suffix=staged_path.suffix or ".slp")
+            except Exception as exc:  # defensive: never let the worker crash the thread
+                import sys
+                print(
+                    f"[FTP][ERROR] Live partial parse failed for '{staged_path.name}': {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                parsed = None
+
+            if parsed is not None and (parsed.players or parsed.stage is not None):
+                _set_source_player_preview(source_name, parsed.players, stage=parsed.stage)
+                return
+
+        if stop_event.wait(poll_seconds):
+            return
+
+
+def _set_source_player_preview(
+    source_name: str,
+    players: list[dict],
+    *,
+    stage: int | None = None,
+    enrich_only: bool = False,
+) -> None:
+    """Update the live player preview for a source.
+
+    The SLP metadata defines the roster of players that show up. When
+    ``enrich_only`` is True (e.g. for the controller-metadata sidecar), incoming
+    players may only fill in fields for ports that already exist in the roster;
+    ports that are not already present are omitted rather than added.
+    """
     def _port_sort_key(player: dict) -> int:
         try:
             return int(player.get("port"))
@@ -722,9 +753,7 @@ def _set_source_player_preview(source_name: str, players: list[dict], *, stage: 
         except (TypeError, ValueError):
             port = None
 
-        # Accept either 1..4 or legacy 0..3 indexing.
-        if port is not None and 0 <= port <= 3:
-            port += 1
+        # Callers pass already-normalized 1..4 ports; reject anything out of range.
         if port is not None and (port < 1 or port > 4):
             port = None
 
@@ -738,6 +767,14 @@ def _set_source_player_preview(source_name: str, players: list[dict], *, stage: 
         )
         firmware = normalized_fields.get("firmware") or player.get("firmware")
 
+        character_id = player.get("character_id")
+        if character_id is None:
+            character_id = player.get("character")
+        player_type = player.get("type")
+        is_cpu = player.get("is_cpu")
+        if is_cpu is None and player_type is not None:
+            is_cpu = player_type == 1
+
         if not any([display_name, tag, slippi_code, firmware, port is not None]):
             return None
 
@@ -747,6 +784,9 @@ def _set_source_player_preview(source_name: str, players: list[dict], *, stage: 
             "tag": tag,
             "slippi_code": slippi_code,
             "firmware": firmware,
+            "character_id": character_id,
+            "type": player_type,
+            "is_cpu": is_cpu,
         }
 
     incoming_preview: list[dict] = []
@@ -765,48 +805,108 @@ def _set_source_player_preview(source_name: str, players: list[dict], *, stage: 
         except (TypeError, ValueError):
             normalized_stage = None
 
+    preview_fields = (
+        "port",
+        "display_name",
+        "tag",
+        "slippi_code",
+        "firmware",
+        "character_id",
+        "type",
+        "is_cpu",
+    )
+
+    def _key_for(player: dict) -> int | None:
+        try:
+            return int(player.get("port")) if player.get("port") is not None else None
+        except (TypeError, ValueError):
+            return None
+
     with _stream_state_lock:
         if source_name not in _source_connections:
             return
 
-        existing_preview = _source_connections[source_name].get("player_preview") or []
+        conn = _source_connections[source_name]
+
+        existing_preview = conn.get("player_preview") or []
         existing_by_port: dict[int | None, dict] = {}
         for player in existing_preview:
-            try:
-                key = int(player.get("port")) if player.get("port") is not None else None
-            except (TypeError, ValueError):
-                key = None
-            existing_by_port[key] = dict(player)
+            existing_by_port[_key_for(player)] = dict(player)
 
-        merged_preview: list[dict] = []
-        incoming_keys: set[int | None] = set()
-        for player in incoming_preview:
-            try:
-                key = int(player.get("port")) if player.get("port") is not None else None
-            except (TypeError, ValueError):
-                key = None
-            incoming_keys.add(key)
+        # Per-port sidecar enrichment that has arrived but may not yet have a
+        # matching SLP-roster player. The sidecar is uploaded before the .slp, so
+        # its fields are stashed here and applied (fill-only) once the roster lands.
+        pending_enrichment: dict[int | None, dict] = dict(conn.get("pending_enrichment") or {})
+        preview_seeded_from_enrichment = bool(conn.get("preview_seeded_from_enrichment"))
 
-            merged = dict(existing_by_port.get(key, {}))
-            for field in ("port", "display_name", "tag", "slippi_code", "firmware"):
-                value = player.get(field)
-                if value is not None and value != "":
-                    merged[field] = value
-            merged_preview.append(merged)
+        if enrich_only:
+            # The sidecar may only populate ports that are (or will be) part of the
+            # SLP roster; it never introduces new players. Stash its fields and fill
+            # in any matching roster ports without clobbering SLP-derived values.
+            for player in incoming_preview:
+                key = _key_for(player)
+                fields = {
+                    field: player.get(field)
+                    for field in preview_fields
+                    if player.get(field) is not None and player.get(field) != ""
+                }
+                merged_fields = dict(pending_enrichment.get(key, {}))
+                merged_fields.update(fields)
+                pending_enrichment[key] = merged_fields
 
-        for key, player in existing_by_port.items():
-            if key in incoming_keys:
-                continue
-            merged_preview.append(player)
+                target = existing_by_port.get(key)
+                if target is not None:
+                    for field, value in merged_fields.items():
+                        if target.get(field) in (None, ""):
+                            target[field] = value
+
+            # If we have no SLP-derived roster yet, seed a temporary preview from
+            # sidecar metadata so the live row appears before the upload finishes.
+            # The next non-enrichment update replaces this seeded preview.
+            if existing_by_port:
+                merged_preview = list(existing_by_port.values())
+            else:
+                merged_preview = [dict(player) for player in incoming_preview]
+                preview_seeded_from_enrichment = len(merged_preview) > 0
+        else:
+            merged_preview = []
+            incoming_keys: set[int | None] = set()
+            for player in incoming_preview:
+                key = _key_for(player)
+                incoming_keys.add(key)
+
+                merged = dict(existing_by_port.get(key, {}))
+                for field in preview_fields:
+                    value = player.get(field)
+                    if value is not None and value != "":
+                        merged[field] = value
+                merged_preview.append(merged)
+
+            for key, player in existing_by_port.items():
+                if key in incoming_keys or preview_seeded_from_enrichment:
+                    continue
+                merged_preview.append(player)
+
+            # Apply any sidecar enrichment received earlier to the roster ports,
+            # filling only fields the SLP metadata did not already provide.
+            for player in merged_preview:
+                for field, value in (pending_enrichment.get(_key_for(player)) or {}).items():
+                    if player.get(field) in (None, ""):
+                        player[field] = value
+
+            preview_seeded_from_enrichment = False
 
         merged_preview.sort(key=_port_sort_key)
 
         now = datetime.now(timezone.utc)
-        _source_connections[source_name]["player_preview"] = merged_preview
+        conn["pending_enrichment"] = pending_enrichment
+        conn["preview_seeded_from_enrichment"] = preview_seeded_from_enrichment
+        conn["player_preview"] = merged_preview
         if normalized_stage is not None:
-            _source_connections[source_name]["stage_preview"] = normalized_stage
-        _source_connections[source_name]["updated_at"] = now
-        _source_connections[source_name]["last_activity_at"] = now
+            conn["stage_preview"] = normalized_stage
+        conn["updated_at"] = now
+        conn["last_activity_at"] = now
+
 
 
 def _load_source_metadata_override(source_name: str, session_factory=SessionLocal) -> dict | None:

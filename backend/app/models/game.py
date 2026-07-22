@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Index, Integer, String
+from sqlalchemy import Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -26,6 +26,10 @@ class Game(Base):
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     game_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     tiebreak_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    handwarmer_label: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    handwarmer_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    handwarmer_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    handwarmer_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     file: Mapped["File"] = relationship(back_populates="game")
     players: Mapped[list["Player"]] = relationship(back_populates="game", cascade="all, delete-orphan")
