@@ -26,7 +26,6 @@ services:
     build:
       context: ./backend
     image: slippi-replay-hosting-server-backend
-    stop_grace_period: 6s
     depends_on:
       db:
         condition: service_healthy
@@ -55,7 +54,7 @@ services:
       start_period: 45s
       start_interval: 1s
     command: >
-      sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 3"
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   frontend:
     build:
@@ -72,6 +71,16 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+
+  httpd:
+    image: httpd:2.4-alpine
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "8080:80"
+    volumes:
+      - ./httpd/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
 
   # slippilab:
   #   image: node:20-alpine
