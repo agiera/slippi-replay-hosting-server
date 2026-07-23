@@ -19,7 +19,7 @@ from app.models.tournament_source import TournamentSource
 from app.models.tournament_series import TournamentSeries
 from app.schemas.streaming import StreamStatusResponse, TournamentSeriesPublic
 from app.schemas.replay import ReplayFileListResponse, ReplayFilePublic, ReplayPlayerPublic
-from app.services.ftp_server import get_stream_events_since, get_stream_status_snapshot
+from app.services.ftp_server import get_source_live_replay_path, get_stream_events_since, get_stream_status_snapshot
 from app.services.slippi_profile import fetch_profile_by_connect_code
 from app.services.tournament_slug import resolve_tournament_name
 from app.services.view_cache import PEPPI_SUFFIX, get_cached_replay_path, prune_view_cache, rebuild_cached_replay_from_archive
@@ -190,6 +190,27 @@ def download_file(file_id: int, db: Session = Depends(get_db)) -> FileResponse:
         media_type = "application/x-slippi-replay"
 
     return FileResponse(path=candidate, filename=file_row.name, media_type=media_type)
+
+
+@router.get("/stream/sources/{source_name}/download")
+def download_live_source_file(source_name: str) -> FileResponse:
+    staged_path = get_source_live_replay_path(source_name)
+    if staged_path is None:
+        raise HTTPException(status_code=404, detail="No active live replay for source")
+
+    staging_root = Path(settings.FTP_STAGING_DIR).resolve()
+    candidate = staged_path.resolve()
+
+    if staging_root not in candidate.parents and candidate != staging_root:
+        raise HTTPException(status_code=400, detail="Invalid live replay path")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Live replay is unavailable")
+
+    media_type = "application/octet-stream"
+    if candidate.suffix.lower() in {".slp", ".zlp"}:
+        media_type = "application/x-slippi-replay"
+
+    return FileResponse(path=candidate, filename=candidate.name, media_type=media_type)
 
 
 @router.get("/filters")

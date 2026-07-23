@@ -5,7 +5,7 @@ import { fetchReplayFiles, fetchReplayFilterOptions, fetchStreamStatus, openStre
 import crownImage from "../assets/images/crown.png";
 
 const PAGE_SIZE = 40;
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 const STAGE_IMAGES = import.meta.glob("../assets/images/stages/*.png", {
   eager: true,
   import: "default",
@@ -130,6 +130,46 @@ const RANK_FILTER_LIST = [
 ];
 
 const SLIPPILAB_URL = (import.meta.env.VITE_SLIPPILAB_URL || "http://localhost:4173").replace(/\/$/, "");
+
+function buildApiUrl(pathname) {
+  const base = String(API_BASE || "").replace(/\/+$/, "");
+  if (/^https?:\/\//i.test(base)) {
+    return new URL(`${base}${pathname}`).toString();
+  }
+  return new URL(`${base}${pathname}`, window.location.origin).toString();
+}
+
+function buildReplayDownloadUrl(fileId) {
+  if (!fileId) {
+    return "";
+  }
+  return buildApiUrl(`/replays/files/${fileId}/download`);
+}
+
+function buildSlippiDeepLink(fileId) {
+  const replayUrl = buildReplayDownloadUrl(fileId);
+  if (!replayUrl) {
+    return "";
+  }
+  return `slippi://play?path=${encodeURIComponent(replayUrl)}`;
+}
+
+function buildLiveSourceDownloadUrl(sourceName) {
+  const normalized = String(sourceName || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  return buildApiUrl(`/replays/stream/sources/${encodeURIComponent(normalized)}/download`);
+}
+
+function buildSlippiMirrorDeepLink(sourceName) {
+  const liveUrl = buildLiveSourceDownloadUrl(sourceName);
+  const normalized = String(sourceName || "").trim();
+  if (!liveUrl || !normalized) {
+    return "";
+  }
+  return `slippi://play?path=${encodeURIComponent(liveUrl)}&mirror=1&console=${encodeURIComponent(normalized)}`;
+}
 
 function SearchableMultiSelect({ label, selected, options, onChange }) {
   const [open, setOpen] = useState(false);
@@ -1025,10 +1065,10 @@ export default function Home() {
     if (!fileId) {
       return;
     }
-    const replayUrl = new URL(`${API_BASE.replace(/\/+$/, "")}/replays/files/${fileId}/download`);
+    const replayUrl = buildReplayDownloadUrl(fileId);
 
     setError("");
-    const viewerUrl = `${SLIPPILAB_URL}?replayUrl=${encodeURIComponent(replayUrl.toString())}`;
+    const viewerUrl = `${SLIPPILAB_URL}?replayUrl=${encodeURIComponent(replayUrl)}`;
     window.open(viewerUrl, "_blank", "noopener,noreferrer");
   }
 
@@ -1036,16 +1076,19 @@ export default function Home() {
     if (!fileId) {
       return;
     }
-    const replayUrl = new URL(`${API_BASE.replace(/\/+$/, "")}/replays/files/${fileId}/download`);
-    window.open(replayUrl.toString(), "_blank", "noopener,noreferrer");
+    const replayUrl = buildReplayDownloadUrl(fileId);
+    window.open(replayUrl, "_blank", "noopener,noreferrer");
   }
 
   function openInSlippi(fileId) {
     if (!fileId) {
       return;
     }
-    const replayUrl = new URL(`${API_BASE.replace(/\/+$/, "")}/replays/files/${fileId}/download`);
-    window.location.href = `slippi://play?path=${encodeURIComponent(replayUrl.toString())}`;
+    const slippiLink = buildSlippiDeepLink(fileId);
+    if (!slippiLink) {
+      return;
+    }
+    window.location.href = slippiLink;
   }
 
   function streamInSlippi(sourceName) {
@@ -1054,20 +1097,15 @@ export default function Home() {
       return;
     }
 
-    const latestSourceReplay = files.find(
-      (item) => (item.source_name || item.collection_name || "") === normalizedSource
-    );
-    const replayId = latestSourceReplay?.id ?? latestSourceReplay?._id;
-
     // Keep the source filter in sync with the stream action.
     setFilters((prev) => ({ ...prev, source: normalizedSource }));
-
-    if (replayId) {
-      openInSlippi(replayId);
+    const slippiLink = buildSlippiMirrorDeepLink(normalizedSource);
+    if (!slippiLink) {
+      setStreamError(`No replay available yet for source ${normalizedSource}.`);
       return;
     }
-
-    setStreamError(`No replay available yet for source ${normalizedSource}.`);
+    setStreamError("");
+    window.location.href = slippiLink;
   }
 
   return (
@@ -1260,14 +1298,17 @@ export default function Home() {
                           </>
                         ) : (
                           <>
-                            <button
-                              type="button"
+                            <a
                               className="viewer-row-btn"
-                              onClick={() => openInSlippi(fileId)}
-                              disabled={!fileId}
+                              href={buildSlippiDeepLink(fileId) || "#"}
+                              onClick={(event) => {
+                                if (!fileId) {
+                                  event.preventDefault();
+                                }
+                              }}
                             >
                               View in Slippi
-                            </button>
+                            </a>
                             <button
                               type="button"
                               className="viewer-row-btn"

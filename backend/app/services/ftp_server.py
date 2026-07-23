@@ -141,6 +141,7 @@ class ReplayFTPHandler(FTPHandler):
         # live row shows the same players + stage the finished row will (the
         # controller sidecar alone lacks CPUs, characters and stage).
         if self.ftp_session is not None and not self._is_metadata_sidecar_filename(file):
+            _set_source_active_staged_file(self.ftp_session.source_name, str(file))
             self._start_live_partial_parse(Path(str(file)), self.ftp_session.source_name)
         super().ftp_STOR(file, mode)
 
@@ -234,6 +235,8 @@ class ReplayFTPHandler(FTPHandler):
                 )
             print(f"[FTP] Failed to ingest uploaded file '{staged_path}': {exc}", flush=True)
         finally:
+            if self.ftp_session is not None and not self._is_metadata_sidecar_filename(staged_path.name):
+                _set_source_active_staged_file(self.ftp_session.source_name, None)
             try:
                 staged_path.unlink(missing_ok=True)
             except Exception:
@@ -322,6 +325,8 @@ class ReplayFTPHandler(FTPHandler):
         self._session_transfer_attempted = True
         if not self._is_metadata_sidecar_filename(Path(file).name):
             self._session_replay_transfer_attempted = True
+            if self.ftp_session is not None:
+                _set_source_active_staged_file(self.ftp_session.source_name, None)
         if self.ftp_session is not None:
             _record_stream_event(
                 source_name=self.ftp_session.source_name,
@@ -360,6 +365,7 @@ class ReplayFTPHandler(FTPHandler):
                 self.ftp_session.repositories,
                 connected=False,
             )
+            _set_source_active_staged_file(self.ftp_session.source_name, None)
         self.authorizer.clear_context(self)
         super().on_disconnect()
 
@@ -673,11 +679,35 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 "last_activity_at": now,
                 "last_completed_at": existing_last_completed_at,
                 "stream_phase": "started",
+                "active_staged_path": None,
             }
         else:
             if source_name in _source_connections:
                 _source_connections[source_name]["connected"] = False
                 _source_connections[source_name]["updated_at"] = datetime.now(timezone.utc)
+
+
+def _set_source_active_staged_file(source_name: str, staged_path: str | None) -> None:
+    with _stream_state_lock:
+        if source_name not in _source_connections:
+            return
+        _source_connections[source_name]["active_staged_path"] = staged_path
+
+
+def get_source_live_replay_path(source_name: str) -> Path | None:
+    with _stream_state_lock:
+        row = _source_connections.get(source_name)
+        if not row:
+            return None
+        value = row.get("active_staged_path")
+
+    if not value:
+        return None
+
+    try:
+        return Path(str(value))
+    except Exception:
+        return None
 
 
 def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: threading.Event) -> None:

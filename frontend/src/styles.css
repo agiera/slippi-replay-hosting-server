@@ -617,6 +617,28 @@ body {
   padding: 6px 10px;
   font-size: 0.82rem;
   border-radius: 8px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+a.viewer-row-btn {
+  border: none;
+  background: var(--indigo);
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+a.viewer-row-btn:hover {
+  background: var(--indigo-strong);
+}
+
+.viewer-row-btn:disabled,
+.viewer-row-btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .viewer-row-actions {
