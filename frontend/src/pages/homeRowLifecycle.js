@@ -192,7 +192,7 @@ function toCompletedReplayRow(file) {
   };
 }
 
-export function mergeReplayRows({ streamStatus, files, nowMs }) {
+export function mergeReplayRows({ streamStatus, files, nowMs, includeLiveRows = true }) {
   const completedRows = (files || []).map((file) => toCompletedReplayRow(file));
   const completedByStreamGameId = new Set(
     completedRows
@@ -200,13 +200,15 @@ export function mergeReplayRows({ streamStatus, files, nowMs }) {
       .filter(Boolean)
   );
 
-  const liveRows = (streamStatus.sources || [])
-    .filter((source) => isLiveSourceVisible(source, streamStatus.events, files, nowMs))
-    .map((source) => toLiveReplayRow(source, nowMs, streamStatus.tournament))
-    .filter((row) => {
-      const streamGameId = String(row.stream_game_id || "").trim();
-      return !streamGameId || !completedByStreamGameId.has(streamGameId);
-    });
+  const liveRows = includeLiveRows
+    ? (streamStatus.sources || [])
+        .filter((source) => isLiveSourceVisible(source, streamStatus.events, files, nowMs))
+        .map((source) => toLiveReplayRow(source, nowMs, streamStatus.tournament))
+        .filter((row) => {
+          const streamGameId = String(row.stream_game_id || "").trim();
+          return !streamGameId || !completedByStreamGameId.has(streamGameId);
+        })
+    : [];
 
   return [...liveRows, ...completedRows];
 }

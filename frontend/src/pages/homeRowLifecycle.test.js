@@ -165,3 +165,40 @@ test("replaces live row when completed row with same stream_game_id exists", () 
   assert.equal(rows[0].lifecycle, "completed");
   assert.equal(rows[0].id, 123);
 });
+
+test("can defer live rows until completed rows are ready", () => {
+  const rows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [
+        {
+          source_name: "setup-4",
+          username: "streamer",
+          connected: true,
+          stream_phase: "started",
+          player_preview: [{ name: "P1", port: 1 }],
+          repositories: ["public"],
+          connected_at: isoNowMinus(20_000),
+          updated_at: isoNowMinus(2_000),
+          last_activity_at: isoNowMinus(2_000),
+          stream_game_id: "g-5",
+        },
+      ],
+      events: [],
+    },
+    files: [
+      {
+        id: 456,
+        folder: "uploads/public/setup-4/2026/07/24",
+        name: "completed.slp",
+        birth_time: new Date().toISOString(),
+      },
+    ],
+    nowMs: Date.now(),
+    includeLiveRows: false,
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lifecycle, "completed");
+  assert.equal(rows[0].id, 456);
+});
