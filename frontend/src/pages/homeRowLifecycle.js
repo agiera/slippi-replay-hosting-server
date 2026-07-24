@@ -4,6 +4,20 @@ function isTerminalStreamStatus(status) {
   return TERMINAL_STREAM_PHASES.has(String(status || "").toLowerCase());
 }
 
+function getStreamSessionKey(row) {
+  const streamGameId = String(row?.stream_game_id || "").trim();
+  if (streamGameId) {
+    return `stream:${streamGameId}`;
+  }
+
+  const sourceName = String(row?.source_name || "").trim();
+  if (sourceName) {
+    return `source:${sourceName}`;
+  }
+
+  return "";
+}
+
 function parseFolderMetadata(folder) {
   if (!folder) {
     return { repository: null, source: null };
@@ -44,8 +58,11 @@ function getResolvedTournamentName(file) {
   );
 }
 
-function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs) {
-  if (isTerminalStreamStatus(source.stream_phase)) {
+function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs, preservedTerminalRowKeys) {
+  const streamSessionKey = getStreamSessionKey(source);
+  const preserveTerminalRow = streamSessionKey && preservedTerminalRowKeys.has(streamSessionKey);
+
+  if (isTerminalStreamStatus(source.stream_phase) && !preserveTerminalRow) {
     return false;
   }
 
@@ -93,7 +110,7 @@ function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs) {
     return !Number.isNaN(eventMs) && eventMs >= connectedAtMs - 5000;
   });
 
-  if (terminalEventForSession) {
+  if (terminalEventForSession && !preserveTerminalRow) {
     return false;
   }
 
@@ -187,7 +204,14 @@ function toCompletedReplayRow(file) {
   };
 }
 
-export function mergeReplayRows({ streamStatus, files, nowMs, includeLiveRows = true }) {
+export function mergeReplayRows({
+  streamStatus,
+  files,
+  nowMs,
+  includeLiveRows = true,
+  preservedTerminalRows = [],
+}) {
+  const preservedTerminalRowKeys = new Set(preservedTerminalRows);
   const completedRows = (files || []).map((file) => toCompletedReplayRow(file));
   const completedByStreamGameId = new Map(
     completedRows
@@ -197,7 +221,7 @@ export function mergeReplayRows({ streamStatus, files, nowMs, includeLiveRows = 
 
   const liveRows = includeLiveRows
     ? (streamStatus.sources || [])
-        .filter((source) => isLiveSourceVisible(source, streamStatus.events, files, nowMs))
+        .filter((source) => isLiveSourceVisible(source, streamStatus.events, files, nowMs, preservedTerminalRowKeys))
         .map((source) => toLiveReplayRow(source, nowMs, streamStatus.tournament))
     : [];
 

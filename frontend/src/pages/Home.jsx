@@ -643,6 +643,7 @@ export default function Home() {
   const [streamError, setStreamError] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
   const [hasSettledInitialReplayLoad, setHasSettledInitialReplayLoad] = useState(false);
+  const [preservedTerminalRows, setPreservedTerminalRows] = useState([]);
   const sentinelRef = useRef(null);
   const latestCompletedEventMsRef = useRef(0);
 
@@ -652,8 +653,9 @@ export default function Home() {
       files,
       nowMs,
       includeLiveRows: hasSettledInitialReplayLoad,
+      preservedTerminalRows,
     }),
-    [streamStatus, files, nowMs, hasSettledInitialReplayLoad]
+    [streamStatus, files, nowMs, hasSettledInitialReplayLoad, preservedTerminalRows]
   );
 
   const tablePlayerColumnCount = useMemo(() => {
@@ -730,6 +732,7 @@ export default function Home() {
       setError(err.message);
       setHasMore(false);
     } finally {
+      setPreservedTerminalRows([]);
       setHasSettledInitialReplayLoad(true);
       setLoading(false);
     }
@@ -788,6 +791,17 @@ export default function Home() {
         try {
           const payload = JSON.parse(event.data || "{}");
           setStreamStatus((prev) => applyStreamEventFrame(prev, payload));
+          const terminalStatus = ["ended", "completed", "abandoned", "incomplete", "failed"].includes(
+            String(payload?.status || "").toLowerCase()
+          );
+          if (terminalStatus) {
+            const streamGameId = String(payload?.stream_game_id || "").trim();
+            const sourceName = String(payload?.source_name || "").trim();
+            const preserveKey = streamGameId ? `stream:${streamGameId}` : (sourceName ? `source:${sourceName}` : "");
+            if (preserveKey) {
+              setPreservedTerminalRows((prev) => (prev.includes(preserveKey) ? prev : [...prev, preserveKey]));
+            }
+          }
           // Some environments intermittently miss `status` frames while still
           // receiving `stream_event`. Re-sync sources from the status endpoint
           // on each event so live rows appear/update without manual refresh.
