@@ -70,15 +70,6 @@ function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs) {
 
   const sourceStreamGameId = String(source.stream_game_id || "").trim();
 
-  if (sourceStreamGameId) {
-    const hasFinalizedRowByKey = (completedFiles || []).some(
-      (file) => String(file?.stream_game_id || "").trim() === sourceStreamGameId
-    );
-    if (hasFinalizedRowByKey) {
-      return false;
-    }
-  }
-
   const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
   const terminalEventForSession = (streamEvents || []).some((event) => {
     const eventStreamGameId = String(event?.stream_game_id || "").trim();
@@ -154,7 +145,9 @@ function toLiveReplayRow(source, nowMs, tournament) {
   return {
     ...source,
     lifecycle: source.connected ? "live" : "finalizing",
-    rowKey: `live:${source.stream_game_id || `${sourceName}:${source.username || "unknown"}`}`,
+    rowKey: source.stream_game_id
+      ? `stream:${source.stream_game_id}`
+      : `live:${sourceName}:${source.username || "unknown"}`,
     id: null,
     fileId: null,
     players,
@@ -182,7 +175,9 @@ function toCompletedReplayRow(file) {
   return {
     ...file,
     lifecycle: "completed",
-    rowKey: `file:${fileId || fallbackKey}`,
+    rowKey: file.stream_game_id
+      ? `stream:${file.stream_game_id}`
+      : `file:${fileId || fallbackKey}`,
     fileId,
     source_name: sourceName,
     start_datetime: file.datetime_played || file.birth_time || null,
@@ -194,21 +189,38 @@ function toCompletedReplayRow(file) {
 
 export function mergeReplayRows({ streamStatus, files, nowMs, includeLiveRows = true }) {
   const completedRows = (files || []).map((file) => toCompletedReplayRow(file));
-  const completedByStreamGameId = new Set(
+  const completedByStreamGameId = new Map(
     completedRows
-      .map((row) => String(row.stream_game_id || "").trim())
-      .filter(Boolean)
+      .map((row) => [String(row.stream_game_id || "").trim(), row])
+      .filter(([streamGameId]) => Boolean(streamGameId))
   );
 
   const liveRows = includeLiveRows
     ? (streamStatus.sources || [])
         .filter((source) => isLiveSourceVisible(source, streamStatus.events, files, nowMs))
         .map((source) => toLiveReplayRow(source, nowMs, streamStatus.tournament))
-        .filter((row) => {
-          const streamGameId = String(row.stream_game_id || "").trim();
-          return !streamGameId || !completedByStreamGameId.has(streamGameId);
-        })
     : [];
 
-  return [...liveRows, ...completedRows];
+  const usedCompletedStreamGameIds = new Set();
+  const mergedRows = liveRows.map((row) => {
+    const streamGameId = String(row.stream_game_id || "").trim();
+    if (!streamGameId) {
+      return row;
+    }
+
+    const completedRow = completedByStreamGameId.get(streamGameId);
+    if (!completedRow) {
+      return row;
+    }
+
+    usedCompletedStreamGameIds.add(streamGameId);
+    return completedRow;
+  });
+
+  const trailingCompletedRows = completedRows.filter((row) => {
+    const streamGameId = String(row.stream_game_id || "").trim();
+    return !streamGameId || !usedCompletedStreamGameIds.has(streamGameId);
+  });
+
+  return [...mergedRows, ...trailingCompletedRows];
 }

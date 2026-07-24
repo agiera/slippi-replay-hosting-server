@@ -164,6 +164,59 @@ test("replaces live row when completed row with same stream_game_id exists", () 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].lifecycle, "completed");
   assert.equal(rows[0].id, 123);
+  assert.equal(rows[0].rowKey, "stream:g-4");
+});
+
+test("replaces completed row in the live row position for smooth transition", () => {
+  const rows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [
+        {
+          source_name: "setup-a",
+          username: "streamer",
+          connected: true,
+          stream_phase: "started",
+          player_preview: [{ name: "P1", port: 1 }],
+          repositories: ["public"],
+          connected_at: isoNowMinus(20_000),
+          updated_at: isoNowMinus(2_000),
+          last_activity_at: isoNowMinus(2_000),
+          stream_game_id: "g-a",
+        },
+        {
+          source_name: "setup-b",
+          username: "streamer",
+          connected: true,
+          stream_phase: "started",
+          player_preview: [{ name: "P2", port: 1 }],
+          repositories: ["public"],
+          connected_at: isoNowMinus(20_000),
+          updated_at: isoNowMinus(2_000),
+          last_activity_at: isoNowMinus(2_000),
+          stream_game_id: "g-b",
+        },
+      ],
+      events: [],
+    },
+    files: [
+      {
+        id: 321,
+        folder: "uploads/public/setup-a/2026/07/24",
+        name: "game-a.slp",
+        stream_game_id: "g-a",
+        birth_time: new Date().toISOString(),
+      },
+    ],
+    nowMs: Date.now(),
+  });
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].lifecycle, "completed");
+  assert.equal(rows[0].id, 321);
+  assert.equal(rows[0].rowKey, "stream:g-a");
+  assert.equal(rows[1].lifecycle, "live");
+  assert.equal(rows[1].stream_game_id, "g-b");
 });
 
 test("can defer live rows until completed rows are ready", () => {
