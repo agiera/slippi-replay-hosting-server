@@ -69,7 +69,6 @@ class SourceTokenAuthorizer(DummyAuthorizer):
 
 class ReplayFTPHandler(FTPHandler):
     ftp_session: FTPSessionContext | None = None
-    metadata_override: dict | None = None
     _session_transfer_attempted: bool = False
     _session_replay_transfer_attempted: bool = False
     _pending_metadata_by_replay_name: dict[str, dict] = {}
@@ -87,7 +86,6 @@ class ReplayFTPHandler(FTPHandler):
         if context is None:
             raise AuthenticationFailed("Session context missing")
         self.ftp_session = context
-        self.metadata_override = _load_source_metadata_override(context.source_name)
         self._session_transfer_attempted = False
         self._session_replay_transfer_attempted = False
         self._pending_metadata_by_replay_name = {}
@@ -193,7 +191,6 @@ class ReplayFTPHandler(FTPHandler):
                 )
                 replay_name = self._replay_name_from_metadata_sidecar(original_name)
                 self._pending_metadata_by_replay_name[replay_name] = payload
-                self.metadata_override = payload
                 _store_source_metadata_override(self.ftp_session.source_name, payload)
                 # The SLP metadata defines which players show up. The sidecar only
                 # enriches ports that already exist in that roster (e.g. controller
@@ -258,8 +255,10 @@ class ReplayFTPHandler(FTPHandler):
         if self.ftp_session is None:
             return
 
-        if replay_metadata_override is not None:
-            self.metadata_override = replay_metadata_override
+        applied_metadata_override = _take_next_source_metadata_override(
+            self.ftp_session.source_name,
+            replay_metadata_override,
+        )
 
         repository_name = self.ftp_session.repository_name
         with _stream_state_lock:
@@ -281,16 +280,15 @@ class ReplayFTPHandler(FTPHandler):
                 repository_name=repository_name,
                 original_name=original_name,
                 data=data,
-                metadata_override=replay_metadata_override or self.metadata_override,
+                metadata_override=applied_metadata_override,
                 stream_game_id=stream_game_id,
             )
             refreshed_override = _refresh_source_metadata_from_file(
                 db,
-                source_name=self.ftp_session.source_name,
                 file_id=row._id,
+                existing_payload=applied_metadata_override,
             )
             if refreshed_override:
-                self.metadata_override = refreshed_override
                 _set_source_player_preview(
                     self.ftp_session.source_name,
                     refreshed_override.get("players") or [],
@@ -974,13 +972,29 @@ def _clear_source_metadata_override(source_name: str, session_factory=SessionLoc
         db.commit()
 
 
-def _refresh_source_metadata_from_file(db, *, source_name: str, file_id: int) -> dict | None:
-    source_row = db.scalar(select(SourceMetadata).where(SourceMetadata.source_name == source_name))
-    existing_payload = source_row.metadata_override if source_row and isinstance(source_row.metadata_override, dict) else {}
+def _take_next_source_metadata_override(
+    source_name: str,
+    replay_metadata_override: dict | None,
+    session_factory=SessionLocal,
+) -> dict | None:
+    if replay_metadata_override is not None:
+        _clear_source_metadata_override(source_name, session_factory=session_factory)
+        return replay_metadata_override
+
+    stored_override = _load_source_metadata_override(source_name, session_factory=session_factory)
+    if stored_override is None:
+        return None
+
+    _clear_source_metadata_override(source_name, session_factory=session_factory)
+    return stored_override
+
+
+def _refresh_source_metadata_from_file(db, *, file_id: int, existing_payload: dict | None = None) -> dict | None:
+    existing_payload = existing_payload if isinstance(existing_payload, dict) else {}
 
     game_row = db.scalar(select(Game).where(Game.file_id == file_id))
     if game_row is None:
-        return source_row.metadata_override if source_row else None
+        return existing_payload or None
 
     existing_players_by_port: dict[int, dict] = {}
     existing_players = existing_payload.get("players") if isinstance(existing_payload, dict) else None
@@ -1018,12 +1032,6 @@ def _refresh_source_metadata_from_file(db, *, source_name: str, file_id: int) ->
 
     if merged_players:
         merged_payload["players"] = merged_players
-
-    if source_row is None:
-        source_row = SourceMetadata(source_name=source_name, metadata_override=merged_payload)
-    else:
-        source_row.metadata_override = merged_payload
-    db.add(source_row)
 
     return merged_payload
 

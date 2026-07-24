@@ -22,6 +22,7 @@ from app.services.ftp_server import (
     _source_connections,
     _stream_state_lock,
     _store_source_metadata_override,
+    _take_next_source_metadata_override,
 )
 
 
@@ -212,6 +213,40 @@ def test_source_metadata_override_round_trip(db_session, testing_session_local):
 
     _clear_source_metadata_override("test-source", session_factory=testing_session_local)
     assert db_session.scalar(select(SourceMetadata).where(SourceMetadata.source_name == "test-source")) is None
+
+
+def test_take_next_source_metadata_override_consumes_stored_override_once(db_session, testing_session_local):
+    payload = {
+        "players": [
+            {
+                "port": 1,
+                "display_name": "Preview One",
+                "slippi_code": "PREV#001",
+            }
+        ]
+    }
+
+    _store_source_metadata_override("test-source", payload, session_factory=testing_session_local)
+
+    assert _take_next_source_metadata_override("test-source", None, session_factory=testing_session_local) == payload
+    assert _load_source_metadata_override("test-source", session_factory=testing_session_local) is None
+    assert _take_next_source_metadata_override("test-source", None, session_factory=testing_session_local) is None
+
+
+def test_take_next_source_metadata_override_prefers_explicit_sidecar_and_clears_stored_override(
+    db_session,
+    testing_session_local,
+):
+    stored_payload = {"players": [{"port": 1, "display_name": "Old Sidecar"}]}
+    explicit_payload = {"players": [{"port": 1, "display_name": "New Sidecar"}]}
+
+    _store_source_metadata_override("test-source", stored_payload, session_factory=testing_session_local)
+
+    assert (
+        _take_next_source_metadata_override("test-source", explicit_payload, session_factory=testing_session_local)
+        == explicit_payload
+    )
+    assert _load_source_metadata_override("test-source", session_factory=testing_session_local) is None
 
 
 def test_stream_preview_merges_controller_and_slippi_metadata():
