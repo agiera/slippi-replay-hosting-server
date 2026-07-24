@@ -42,6 +42,52 @@ test("applySnapshotOrStatusFrame keeps prior events when payload events missing"
   assert.equal(next.events[0].event_id, 7);
 });
 
+test("applySnapshotOrStatusFrame preserves rank enrichment across sparse status frames", () => {
+  const prev = {
+    tournament: null,
+    sources: [
+      {
+        source_name: "setup-rank",
+        stream_game_id: "g-rank",
+        rank_lookup_complete: true,
+        player_preview: [
+          {
+            port: 1,
+            connect_code: "MANGO#0",
+            rank: "Master_I",
+            rating: 2200,
+          },
+        ],
+      },
+    ],
+    events: [],
+  };
+
+  const payload = {
+    tournament: null,
+    sources: [
+      {
+        source_name: "setup-rank",
+        stream_game_id: "g-rank",
+        player_preview: [
+          {
+            port: 1,
+            connect_code: "MANGO#0",
+            rank: null,
+            rating: null,
+          },
+        ],
+      },
+    ],
+  };
+
+  const next = applySnapshotOrStatusFrame(prev, payload);
+  assert.equal(next.sources.length, 1);
+  assert.equal(next.sources[0].rank_lookup_complete, true);
+  assert.equal(next.sources[0].player_preview[0].rank, "Master_I");
+  assert.equal(next.sources[0].player_preview[0].rating, 2200);
+});
+
 test("applyStreamEventFrame prepends and dedupes by event_id", () => {
   const prev = {
     tournament: null,
