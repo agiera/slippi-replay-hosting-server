@@ -465,11 +465,15 @@ body {
 
 .file-table tbody tr.stage-row td {
   background: transparent;
+  height: 120px;
+  vertical-align: middle;
 }
 
 .player-cell {
   display: grid;
+  align-content: center;
   gap: 5px;
+  min-height: 100px;
 }
 
 .player-name-wrap {
@@ -535,7 +539,10 @@ body {
 
 .row-meta-cell {
   display: grid;
+  align-content: center;
   gap: 4px;
+  width: 110px;
+  min-height: 100px;
 }
 
 .row-meta-primary {
@@ -552,7 +559,9 @@ body {
 
 .row-game-stack {
   display: grid;
+  align-content: center;
   gap: 4px;
+  min-height: 100px;
 }
 
 .row-game-stage {
@@ -645,7 +654,9 @@ a.viewer-row-btn:hover {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  justify-content: center;
   gap: 6px;
+  min-height: 100px;
 }
 
 .viewer-row-btn-secondary {
