@@ -18,6 +18,7 @@ class ReplayFilePublic(BaseModel):
     id: int
     folder: str
     name: str
+    stream_game_id: str | None = None
     source_name: str | None = None
     resolved_tournament_name: str | None = None
     size_bytes: int

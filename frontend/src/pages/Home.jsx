@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { fetchReplayFiles, fetchReplayFilterOptions, fetchStreamStatus, openStreamEvents } from "../lib/api";
+import {
+  fetchReplayFiles,
+  fetchReplayFilterOptions,
+  fetchStreamStatus,
+  openStreamEvents,
+} from "../lib/api";
 import crownImage from "../assets/images/crown.png";
+import { mergeReplayRows } from "./homeRowLifecycle";
+import {
+  applySnapshotOrStatusFrame,
+  applyStreamEventFrame,
+  shouldRefreshReplayList,
+} from "./homeStreamState";
+import { createStreamStatusRefreshScheduler } from "./homeStreamRefresh";
 
 const PAGE_SIZE = 40;
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api/v1";
@@ -432,38 +444,6 @@ function buildSearchParams(filters) {
   return params;
 }
 
-function normalizeStreamStatusPayload(payload, fallbackEvents = []) {
-  const normalizedSources = (Array.isArray(payload?.sources) ? payload.sources : []).map((source) => {
-    const normalizedPreview = (Array.isArray(source?.player_preview) ? source.player_preview : []).map((player) => {
-      const connectCode = player?.connect_code || player?.slippi_code || null;
-      const name = player?.name || player?.display_name || player?.tag || connectCode || null;
-      return {
-        name,
-        connect_code: connectCode,
-        character_id: player?.character_id ?? null,
-        character_color: player?.character_color ?? null,
-        port: player?.port ?? null,
-        type: player?.type ?? null,
-        is_cpu: Boolean(player?.is_cpu),
-        is_winner: player?.is_winner ?? null,
-        rank: player?.rank ?? null,
-        rating: player?.rating ?? null,
-      };
-    });
-
-    return {
-      ...source,
-      player_preview: normalizedPreview,
-    };
-  });
-
-  return {
-    tournament: payload?.tournament || null,
-    sources: normalizedSources,
-    events: Array.isArray(payload?.events) ? payload.events : fallbackEvents,
-  };
-}
-
 function formatGameDuration(totalSeconds) {
   if (totalSeconds === null || totalSeconds === undefined) {
     return "-";
@@ -524,46 +504,6 @@ function formatStageName(stageId) {
   }
 
   return STAGE_NAME_BY_ID[normalizedId] || `Stage ${normalizedId}`;
-}
-
-function parseFolderMetadata(folder) {
-  if (!folder) {
-    return { repository: null, source: null };
-  }
-
-  const parts = String(folder)
-    .split("/")
-    .filter(Boolean);
-  if (parts.length === 0) {
-    return { repository: null, source: null };
-  }
-
-  if (parts[0] === "uploads") {
-    const repository = parts[1] || null;
-    let source = null;
-    if (parts[2]) {
-      const maybeSource = parts[2];
-      if (!(maybeSource.length === 4 && /^\d+$/.test(maybeSource))) {
-        source = maybeSource;
-      }
-    }
-    return { repository, source };
-  }
-
-  return {
-    repository: parts[0] || null,
-    source: parts[1] || null,
-  };
-}
-
-function getResolvedTournamentName(file) {
-  return (
-    file?.resolved_tournament_name ||
-    file?.current_tournament_name ||
-    file?.tournament_name ||
-    file?.tournament ||
-    null
-  );
 }
 
 function getStageRowStyle(stageId) {
@@ -705,116 +645,9 @@ export default function Home() {
   const sentinelRef = useRef(null);
   const latestCompletedEventMsRef = useRef(0);
 
-  const streamSourceRows = useMemo(
-    () =>
-      (streamStatus.sources || [])
-        // Show a source once its partial SLP has produced a player preview.
-        // Keep a just-disconnected source visible until its finalized upload row
-        // appears, avoiding a brief visual gap between live and final rows.
-        .filter(
-          (source) => {
-            if (source.connected) {
-              return true;
-            }
-
-            if (!Array.isArray(source.player_preview) || source.player_preview.length === 0) {
-              return false;
-            }
-
-            const sourceName = (source.source_name || "").trim();
-            if (!sourceName) {
-              return false;
-            }
-
-            const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
-            const terminalEventForSession = (streamStatus.events || []).some((event) => {
-              if ((event?.source_name || "").trim() !== sourceName) {
-                return false;
-              }
-
-              const status = String(event?.status || "").toLowerCase();
-              if (!["ended", "completed", "abandoned", "incomplete", "failed"].includes(status)) {
-                return false;
-              }
-
-              if (Number.isNaN(connectedAtMs)) {
-                return true;
-              }
-
-              const eventMs = event?.timestamp ? new Date(event.timestamp).getTime() : NaN;
-              return !Number.isNaN(eventMs) && eventMs >= connectedAtMs - 5000;
-            });
-
-            // If this source session already emitted a terminal event, hide the
-            // live row even when the finalized replay row is filtered out.
-            if (terminalEventForSession) {
-              return false;
-            }
-
-            const hasFinalizedRowForSession = files.some((file) => {
-              const fileSource = (file?.source_name || file?.collection_name || "").trim();
-              if (!fileSource || fileSource !== sourceName) {
-                return false;
-              }
-
-              if (Number.isNaN(connectedAtMs)) {
-                return true;
-              }
-
-              const birthMs = file?.birth_time ? new Date(file.birth_time).getTime() : NaN;
-              if (Number.isNaN(birthMs)) {
-                return false;
-              }
-
-              // Allow slight skew around session connect time when matching the
-              // newly finalized row that replaces this live row.
-              return birthMs >= connectedAtMs - 5000;
-            });
-
-            return !hasFinalizedRowForSession;
-          },
-        )
-        .map((source) => {
-          // The stream-status API already returns player_preview in the same
-          // normalized shape as completed replays' `players`, so both row types
-          // flow through getRowPlayers/renderPlayerCell identically.
-          const players = Array.isArray(source.player_preview) ? source.player_preview : [];
-          const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
-          const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
-          const lastActivityAtMs = source.last_activity_at ? new Date(source.last_activity_at).getTime() : NaN;
-          const endAtMs = !Number.isNaN(lastActivityAtMs)
-            ? lastActivityAtMs
-            : updatedAtMs;
-          const durationBaseMs = !Number.isNaN(connectedAtMs)
-            ? connectedAtMs
-            : (!Number.isNaN(updatedAtMs) ? updatedAtMs : lastActivityAtMs);
-          const durationNowMs = source.connected ? nowMs : endAtMs;
-          const playedAt = source.connected_at || source.updated_at || source.last_activity_at || null;
-          const gameDuration = Number.isNaN(durationBaseMs) || Number.isNaN(durationNowMs)
-            ? 0
-            : Math.max(0, Math.floor((durationNowMs - durationBaseMs) / 1000));
-          return {
-            id: null,
-            _streaming: true,
-            _streamKind: "source",
-            _streamConnected: Boolean(source.connected),
-            _streamKey: `${source.source_name}-${source.username}`,
-            players,
-            stage: source.stage_preview ?? null,
-            game_duration: gameDuration,
-            datetime_played: playedAt,
-            stream_source_name: source.source_name,
-            stream_repositories: source.repositories || [],
-            resolved_tournament_name: source.resolved_tournament_name || null,
-            name: `live:${source.source_name}`,
-          };
-        }),
-    [streamStatus.sources, streamStatus.events, files, nowMs]
-  );
-
   const tableRows = useMemo(
-    () => [...streamSourceRows, ...files],
-    [streamSourceRows, files]
+    () => mergeReplayRows({ streamStatus, files, nowMs }),
+    [streamStatus, files, nowMs]
   );
 
   const tablePlayerColumnCount = useMemo(() => {
@@ -898,22 +731,25 @@ export default function Home() {
   useEffect(() => {
     let active = true;
 
-    function maybeRefreshReplayList(events) {
-      const refreshStatuses = new Set(["pending_parse", "slippi_file_metadata", "ended", "completed"]);
-      const refreshEvents = (events || []).filter((event) => {
-        const status = (event?.status || "").toLowerCase();
-        return refreshStatuses.has(status);
-      });
-      const newestRefreshEventMs = refreshEvents.reduce((latest, event) => {
-        const ts = event?.timestamp ? new Date(event.timestamp).getTime() : NaN;
-        if (Number.isNaN(ts)) {
-          return latest;
+    const streamStatusRefreshScheduler = createStreamStatusRefreshScheduler({
+      delayMs: 250,
+      onRefresh: async () => {
+        try {
+          const statusPayload = await fetchStreamStatus();
+          if (!active) {
+            return;
+          }
+          setStreamStatus((prev) => applySnapshotOrStatusFrame(prev, statusPayload));
+        } catch {
+          // Keep the existing SSE-driven state when status fetch fails.
         }
-        return Math.max(latest, ts);
-      }, 0);
+      },
+    });
 
-      if (newestRefreshEventMs > latestCompletedEventMsRef.current) {
-        latestCompletedEventMsRef.current = newestRefreshEventMs;
+    function maybeRefreshReplayList(events) {
+      const refresh = shouldRefreshReplayList(events, latestCompletedEventMsRef.current);
+      if (refresh.shouldRefresh) {
+        latestCompletedEventMsRef.current = refresh.newestMs;
         void loadFirstPage();
       }
     }
@@ -926,9 +762,7 @@ export default function Home() {
       if (event.type === "snapshot" || event.type === "status") {
         try {
           const payload = JSON.parse(event.data || "{}");
-          setStreamStatus((prev) =>
-            normalizeStreamStatusPayload(payload, Array.isArray(prev?.events) ? prev.events : [])
-          );
+          setStreamStatus((prev) => applySnapshotOrStatusFrame(prev, payload));
           setStreamError("");
           if (event.type === "snapshot") {
             maybeRefreshReplayList(payload?.events || []);
@@ -946,37 +780,11 @@ export default function Home() {
       if (event.type === "stream_event") {
         try {
           const payload = JSON.parse(event.data || "{}");
-          setStreamStatus((prev) => {
-            const nextEvents = [payload, ...(prev?.events || [])]
-              .filter((row, index, rows) => {
-                const id = Number(row?.event_id) || 0;
-                if (!id) {
-                  return true;
-                }
-                return rows.findIndex((candidate) => (Number(candidate?.event_id) || 0) === id) === index;
-              })
-              .slice(0, 200);
-            return {
-              tournament: prev?.tournament || null,
-              sources: Array.isArray(prev?.sources) ? prev.sources : [],
-              events: nextEvents,
-            };
-          });
+          setStreamStatus((prev) => applyStreamEventFrame(prev, payload));
           // Some environments intermittently miss `status` frames while still
           // receiving `stream_event`. Re-sync sources from the status endpoint
           // on each event so live rows appear/update without manual refresh.
-          void fetchStreamStatus()
-            .then((statusPayload) => {
-              if (!active) {
-                return;
-              }
-              setStreamStatus((prev) =>
-                normalizeStreamStatusPayload(statusPayload, Array.isArray(prev?.events) ? prev.events : [])
-              );
-            })
-            .catch(() => {
-              // Keep the existing SSE-driven state when status fetch fails.
-            });
+          streamStatusRefreshScheduler.schedule();
           setStreamError("");
           maybeRefreshReplayList([payload]);
         } catch {
@@ -995,6 +803,7 @@ export default function Home() {
 
     return () => {
       active = false;
+      streamStatusRefreshScheduler.cancel();
       stream.close();
     };
   }, [loadFirstPage]);
@@ -1220,27 +1029,14 @@ export default function Home() {
                     <td colSpan={tablePlayerColumnCount + 3}>No files found.</td>
                   </tr>
                 )}
-                {tableRows.map((file) => {
-                  const isStreamingRow = Boolean(file._streaming);
-                  const fileId = file.id ?? file._id;
-                  const folderMeta = parseFolderMetadata(file.folder);
-                  const resolvedTournamentName = getResolvedTournamentName(file);
-                  const repoTournamentLabel = isStreamingRow
-                    ? (
-                      resolvedTournamentName ||
-                      streamStatus?.tournament?.current_tournament_name ||
-                      streamStatus?.tournament?.name ||
-                      streamStatus?.tournament?.repository_name ||
-                      file.stream_repositories?.[0] ||
-                      folderMeta.repository ||
-                      "Streaming"
-                    )
-                    : (resolvedTournamentName || folderMeta.repository || "-");
-                  const sourceLabel = isStreamingRow
-                    ? "Live stream"
-                    : (file.source_name || file.collection_name || folderMeta.source || "-");
-                  const streamBadgeLabel = "LIVE";
-                  const rowPlayers = getRowPlayers(file).slice(0, tablePlayerColumnCount);
+                {tableRows.map((row) => {
+                  const isLiveRow = row.lifecycle === "live";
+                  const isStreamingLifecycle = row.lifecycle === "live" || row.lifecycle === "finalizing";
+                  const fileId = row.fileId;
+                  const repoTournamentLabel = row.repository_label || "-";
+                  const sourceLabel = row.source_label || "-";
+                  const streamBadgeLabel = row.lifecycle === "finalizing" ? "FINALIZING" : "LIVE";
+                  const rowPlayers = getRowPlayers(row).slice(0, tablePlayerColumnCount);
                   const paddedPlayers = [
                     ...rowPlayers,
                     ...Array.from({ length: Math.max(0, tablePlayerColumnCount - rowPlayers.length) }, () => null),
@@ -1248,23 +1044,19 @@ export default function Home() {
                   // Player, stage and start-datetime are populated the same way for
                   // live and completed rows; only a stage placeholder differs while a
                   // live game has no stage parsed yet.
-                  const startDateTime = file.datetime_played || file.birth_time;
-                  const stageLabel = file.stage !== null && file.stage !== undefined
-                    ? formatStageName(file.stage)
-                    : (isStreamingRow ? "Streaming" : formatStageName(file.stage));
+                  const startDateTime = row.start_datetime;
+                  const stageLabel = row.stage !== null && row.stage !== undefined
+                    ? formatStageName(row.stage)
+                    : (isStreamingLifecycle ? "Streaming" : formatStageName(row.stage));
                   return (
                   <tr
-                    key={
-                      isStreamingRow
-                        ? `stream-${file._streamKey}`
-                        : `${file.name}-${file.datetime_played || "unknown"}-${rowPlayers[0]?.name || "p1"}`
-                    }
+                    key={row.rowKey}
                     className="stage-row"
-                    style={getStageRowStyle(file.stage)}
+                    style={getStageRowStyle(row.stage)}
                   >
                     <td>
                       <div className="row-meta-cell">
-                        {isStreamingRow ? (
+                        {isStreamingLifecycle ? (
                           <span className="live-pill">
                             <span className="live-dot" aria-hidden="true" />
                             {streamBadgeLabel}
@@ -1280,20 +1072,30 @@ export default function Home() {
                     <td>
                       <div className="row-game-stack">
                         <div className="row-game-stage">{stageLabel}</div>
-                        <div className="row-game-duration">{formatGameDuration(file.game_duration)}</div>
+                        <div className="row-game-duration">{formatGameDuration(row.game_duration)}</div>
                         <div className="row-game-date">{formatPlayedDateTime(startDateTime)}</div>
                       </div>
                     </td>
                     <td>
                       <div className="viewer-row-actions">
-                        {isStreamingRow ? (
+                        {isLiveRow ? (
                           <>
                             <button
                               type="button"
                               className="viewer-row-btn viewer-row-btn-secondary"
-                              onClick={() => streamInSlippi(file.stream_source_name)}
+                              onClick={() => streamInSlippi(row.source_name)}
                             >
                               Stream in Slippi
+                            </button>
+                          </>
+                        ) : row.lifecycle === "finalizing" ? (
+                          <>
+                            <button
+                              type="button"
+                              className="viewer-row-btn viewer-row-btn-secondary"
+                              disabled
+                            >
+                              Finalizing...
                             </button>
                           </>
                         ) : (

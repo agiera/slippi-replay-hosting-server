@@ -9,6 +9,7 @@ class Game(Base):
     __table_args__ = (
         Index("game_session_id_game_number_index", "session_id", "game_number"),
         Index("game_start_time_index", "start_time"),
+        Index("game_stream_game_id_index", "stream_game_id"),
     )
 
     _id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -24,6 +25,7 @@ class Game(Base):
     timer_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
     starting_timer_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    stream_game_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     game_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     tiebreak_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     handwarmer_label: Mapped[str] = mapped_column(String, nullable=False, default="unknown")

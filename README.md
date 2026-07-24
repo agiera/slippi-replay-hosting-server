@@ -4,6 +4,7 @@ A minimal full-stack starter with:
 
 - FastAPI backend
 - Python 3.13 backend runtime
+- uv package management and virtual environments
 - React (Vite) frontend
 - PostgreSQL database
 - SQLAlchemy ORM
@@ -68,6 +69,23 @@ A minimal full-stack starter with:
 
 ```bash
 docker compose run --rm backend pytest -q
+```
+
+## Backend Local Setup (uv)
+
+Use `uv` for dependency management and local virtual environments:
+
+```bash
+cd backend
+uv sync
+uv run alembic upgrade head
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Optional shell activation:
+
+```bash
+source backend/.venv/bin/activate
 ```
 
 ## Google OIDC Setup

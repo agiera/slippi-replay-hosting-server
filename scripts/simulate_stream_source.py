@@ -24,6 +24,10 @@ from ftplib import FTP, all_errors as ftp_errors
 from pathlib import Path
 
 
+DEFAULT_UPLOAD_CHUNK_BYTES = 16 * 1024
+DEFAULT_UPLOAD_CHUNK_DELAY_SECONDS = 0.01
+
+
 @dataclass
 class Config:
     host: str
@@ -34,24 +38,44 @@ class Config:
     keepalive_seconds: float
     upload_interval_seconds: float
     upload_prefix: str
+    upload_file: Path | None
+    upload_file_sidecar: Path | None
+    upload_chunk_bytes: int
+    upload_chunk_delay_seconds: float
     slpmeta_ubjson_hex: str | None
 
 
 BAKED_CONTROLLER_METADATA_BY_PORT: dict[str, dict[str, str]] = {
     "0": {
-        "nametag": "TAG0",
-        "name": "Player Zero",
-        "slippi": "ZAUB#866",
-        "smashgg": "startgg-demo-0",
-        "parrygg": "parry-demo-0",
+        "nametag": "TEST1",
+        "name": "Test User1",
+        "slippi": "TEST#001",
+        "smashgg": "startgg-test-user-1",
+        "parrygg": "parry-test-user-1",
         "firmware": "1.0.0",
     },
     "1": {
-        "nametag": "TAG1",
-        "name": "Player One",
-        "slippi": "ONE#002",
-        "smashgg": "startgg-demo-1",
-        "parrygg": "parry-demo-1",
+        "nametag": "TEST2",
+        "name": "Test User2",
+        "slippi": "TEST#002",
+        "smashgg": "startgg-test-user-2",
+        "parrygg": "parry-test-user-2",
+        "firmware": "1.0.0",
+    },
+    "2": {
+        "nametag": "TEST3",
+        "name": "Test User3",
+        "slippi": "TEST#003",
+        "smashgg": "startgg-test-user-3",
+        "parrygg": "parry-test-user-3",
+        "firmware": "1.0.0",
+    },
+    "3": {
+        "nametag": "TEST4",
+        "name": "Test User4",
+        "slippi": "TEST#004",
+        "smashgg": "startgg-test-user-4",
+        "parrygg": "parry-test-user-4",
         "firmware": "1.0.0",
     },
 }
@@ -95,6 +119,28 @@ def parse_args() -> Config:
         default=os.getenv("STREAM_SIM_UPLOAD_PREFIX", "sim"),
         help="Filename prefix when upload interval is enabled.",
     )
+    parser.add_argument(
+        "--upload-file",
+        default=os.getenv("STREAM_SIM_UPLOAD_FILE", ""),
+        help="Path to a replay file to upload once after connecting.",
+    )
+    parser.add_argument(
+        "--upload-file-sidecar",
+        default=os.getenv("STREAM_SIM_UPLOAD_FILE_SIDECAR", ""),
+        help="Optional path to a .meta.json sidecar for --upload-file.",
+    )
+    parser.add_argument(
+        "--upload-chunk-bytes",
+        type=int,
+        default=int(os.getenv("STREAM_SIM_UPLOAD_CHUNK_BYTES", str(DEFAULT_UPLOAD_CHUNK_BYTES))),
+        help="Chunk size in bytes for replay file uploads.",
+    )
+    parser.add_argument(
+        "--upload-chunk-delay-seconds",
+        type=float,
+        default=float(os.getenv("STREAM_SIM_UPLOAD_CHUNK_DELAY_SECONDS", str(DEFAULT_UPLOAD_CHUNK_DELAY_SECONDS))),
+        help="Sleep duration between replay upload chunks; use > 0 to throttle upload speed.",
+    )
     slpmeta_group = parser.add_mutually_exclusive_group()
     slpmeta_group.add_argument(
         "--slpmeta-json",
@@ -128,6 +174,14 @@ def parse_args() -> Config:
         parser.error("--keepalive-seconds must be > 0")
     if args.upload_interval_seconds < 0:
         parser.error("--upload-interval-seconds must be >= 0")
+    if args.upload_chunk_bytes <= 0:
+        parser.error("--upload-chunk-bytes must be > 0")
+    if args.upload_chunk_delay_seconds < 0:
+        parser.error("--upload-chunk-delay-seconds must be >= 0")
+    upload_file = _resolve_upload_file(parser, args.upload_file)
+    upload_file_sidecar = _resolve_upload_file_sidecar(parser, args.upload_file_sidecar)
+    if upload_file_sidecar is not None and upload_file is None:
+        parser.error("--upload-file-sidecar requires --upload-file")
 
     repository = args.repository.strip() or None
     slpmeta_ubjson_hex = _load_slpmeta_ubjson_hex(
@@ -147,6 +201,10 @@ def parse_args() -> Config:
         keepalive_seconds=args.keepalive_seconds,
         upload_interval_seconds=args.upload_interval_seconds,
         upload_prefix=args.upload_prefix,
+        upload_file=upload_file,
+        upload_file_sidecar=upload_file_sidecar,
+        upload_chunk_bytes=args.upload_chunk_bytes,
+        upload_chunk_delay_seconds=args.upload_chunk_delay_seconds,
         slpmeta_ubjson_hex=slpmeta_ubjson_hex,
     )
 
@@ -238,6 +296,28 @@ def _normalize_json_metadata_by_port(parser: argparse.ArgumentParser, payload: o
     parser.error("SLPMETA JSON must use players[] with port or object keys 0..3")
 
 
+def _resolve_upload_file(parser: argparse.ArgumentParser, raw_path: str) -> Path | None:
+    if not raw_path.strip():
+        return None
+
+    path = Path(raw_path).expanduser()
+    if not path.is_file():
+        parser.error(f"--upload-file does not exist or is not a file: {path}")
+    return path
+
+
+def _resolve_upload_file_sidecar(parser: argparse.ArgumentParser, raw_path: str) -> Path | None:
+    if not raw_path.strip():
+        return None
+
+    path = Path(raw_path).expanduser()
+    if not path.is_file():
+        parser.error(f"--upload-file-sidecar does not exist or is not a file: {path}")
+    if not str(path.name).lower().endswith(".meta.json"):
+        parser.error("--upload-file-sidecar must point to a .meta.json file")
+    return path
+
+
 def _normalize_controller_metadata_fields(player_meta: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in player_meta.items():
@@ -316,9 +396,38 @@ def upload_metadata_sidecar(ftp: FTP, replay_filename: str, ubjson_hex: str) -> 
     print(f"Uploaded metadata sidecar: {sidecar_filename}", flush=True)
 
 
-def upload_dummy_replay(ftp: FTP, filename: str, payload: bytes) -> None:
+def upload_metadata_sidecar_file(ftp: FTP, replay_filename: str, sidecar_path: Path) -> None:
+    sidecar_filename = replay_filename + ".meta.json"
+    ftp.storbinary(f"STOR {sidecar_filename}", io.BytesIO(sidecar_path.read_bytes()))
+    print(f"Uploaded metadata sidecar: {sidecar_filename} <- {sidecar_path}", flush=True)
+
+
+def _paced_bytes_io(payload: bytes, chunk_bytes: int, chunk_delay_seconds: float) -> io.BytesIO:
+    if chunk_delay_seconds <= 0:
+        return io.BytesIO(payload)
+
+    class PacedBytesIO(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            capped_size = chunk_bytes if size < 0 else min(size, chunk_bytes)
+            data = super().read(capped_size)
+            if data and self.tell() < len(payload):
+                time.sleep(chunk_delay_seconds)
+            return data
+
+    return PacedBytesIO(payload)
+
+
+def upload_replay_bytes(
+    ftp: FTP,
+    filename: str,
+    payload: bytes,
+    *,
+    chunk_bytes: int = 8192,
+    chunk_delay_seconds: float = 0,
+) -> None:
+    fileobj = _paced_bytes_io(payload, chunk_bytes, chunk_delay_seconds)
     try:
-        ftp.storbinary(f"STOR {filename}", io.BytesIO(payload))
+        ftp.storbinary(f"STOR {filename}", fileobj, blocksize=chunk_bytes)
         return
     except OSError as exc:
         passive = getattr(ftp, "passiveserver", True)
@@ -328,9 +437,42 @@ def upload_dummy_replay(ftp: FTP, filename: str, payload: bytes) -> None:
                 flush=True,
             )
             ftp.set_pasv(False)
-            ftp.storbinary(f"STOR {filename}", io.BytesIO(payload))
+            ftp.storbinary(
+                f"STOR {filename}",
+                _paced_bytes_io(payload, chunk_bytes, chunk_delay_seconds),
+                blocksize=chunk_bytes,
+            )
             return
         raise
+
+
+def upload_dummy_replay(ftp: FTP, filename: str, payload: bytes) -> None:
+    upload_replay_bytes(ftp, filename, payload)
+
+
+def upload_replay_file_once(
+    ftp: FTP,
+    path: Path,
+    sidecar_path: Path | None,
+    *,
+    ubjson_hex: str | None = None,
+    upload_chunk_bytes: int = 8192,
+    upload_chunk_delay_seconds: float = 0,
+) -> None:
+    filename = path.name
+    if sidecar_path is not None:
+        upload_metadata_sidecar_file(ftp, filename, sidecar_path)
+    elif ubjson_hex:
+        upload_metadata_sidecar(ftp, filename, ubjson_hex)
+
+    upload_replay_bytes(
+        ftp,
+        filename,
+        path.read_bytes(),
+        chunk_bytes=upload_chunk_bytes,
+        chunk_delay_seconds=upload_chunk_delay_seconds,
+    )
+    print(f"Uploaded replay file: {path}", flush=True)
 
 
 def run(cfg: Config) -> int:
@@ -351,6 +493,15 @@ def run(cfg: Config) -> int:
         return 2
 
     print("Connected. Stream source should now appear as live in the UI.", flush=True)
+    if cfg.upload_file is not None:
+        print(f"Replay file upload enabled for '{cfg.upload_file}'", flush=True)
+        if cfg.upload_file_sidecar is not None:
+            print(f"Using sidecar file '{cfg.upload_file_sidecar}'", flush=True)
+        if cfg.upload_chunk_delay_seconds > 0:
+            print(
+                f"Throttling replay upload: {cfg.upload_chunk_bytes} bytes per chunk with {cfg.upload_chunk_delay_seconds:g}s delay",
+                flush=True,
+            )
     if cfg.upload_interval_seconds > 0:
         print(
             f"Dummy uploads enabled every {cfg.upload_interval_seconds:g}s "
@@ -371,10 +522,22 @@ def run(cfg: Config) -> int:
     signal.signal(signal.SIGTERM, _handle_stop)
 
     next_upload_at = time.monotonic() + cfg.upload_interval_seconds if cfg.upload_interval_seconds > 0 else float("inf")
+    uploaded_configured_file = False
 
     try:
         while not should_stop:
             now = time.monotonic()
+
+            if cfg.upload_file is not None and not uploaded_configured_file:
+                upload_replay_file_once(
+                    ftp,
+                    cfg.upload_file,
+                    cfg.upload_file_sidecar,
+                    ubjson_hex=cfg.slpmeta_ubjson_hex,
+                    upload_chunk_bytes=cfg.upload_chunk_bytes,
+                    upload_chunk_delay_seconds=cfg.upload_chunk_delay_seconds,
+                )
+                uploaded_configured_file = True
 
             if now >= next_upload_at:
                 payload = build_dummy_replay_bytes()

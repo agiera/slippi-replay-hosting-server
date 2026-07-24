@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -261,6 +262,10 @@ class ReplayFTPHandler(FTPHandler):
             self.metadata_override = replay_metadata_override
 
         repository_name = self.ftp_session.repository_name
+        with _stream_state_lock:
+            source_state = _source_connections.get(self.ftp_session.source_name, {})
+            stream_game_id = source_state.get("stream_game_id")
+
         with SessionLocal() as db:
             token_row = db.scalar(
                 select(ApiToken)
@@ -277,6 +282,7 @@ class ReplayFTPHandler(FTPHandler):
                 original_name=original_name,
                 data=data,
                 metadata_override=replay_metadata_override or self.metadata_override,
+                stream_game_id=stream_game_id,
             )
             refreshed_override = _refresh_source_metadata_from_file(
                 db,
@@ -663,11 +669,15 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
             if source_name in _source_connections:
                 existing_last_completed_at = _source_connections[source_name].get("last_completed_at")
             now = datetime.now(timezone.utc)
+            upload_session_id = str(uuid.uuid4())
+            stream_game_id = str(uuid.uuid4())
             # A new connection represents a new game upload; start the live preview
             # fresh so stale ports from a previous game do not linger and merge.
             _source_connections[source_name] = {
                 "source_name": source_name,
                 "username": username,
+                "upload_session_id": upload_session_id,
+                "stream_game_id": stream_game_id,
                 "repositories": sorted(repositories),
                 "connected": True,
                 "updated_at": now,
@@ -890,14 +900,11 @@ def _set_source_player_preview(
                         if target.get(field) in (None, ""):
                             target[field] = value
 
-            # If we have no SLP-derived roster yet, seed a temporary preview from
-            # sidecar metadata so the live row appears before the upload finishes.
-            # The next non-enrichment update replaces this seeded preview.
             if existing_by_port:
                 merged_preview = list(existing_by_port.values())
             else:
-                merged_preview = [dict(player) for player in incoming_preview]
-                preview_seeded_from_enrichment = len(merged_preview) > 0
+                merged_preview = []
+                preview_seeded_from_enrichment = False
         else:
             merged_preview = []
             incoming_keys: set[int | None] = set()
@@ -1040,12 +1047,18 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
 
     event_time = datetime.now(timezone.utc)
     with _stream_state_lock:
+        source_row = _source_connections.get(source_name)
+        upload_session_id = source_row.get("upload_session_id") if source_row else None
+        stream_game_id = source_row.get("stream_game_id") if source_row else None
+
         _stream_event_sequence += 1
         _recent_events.appendleft(
             {
                 "event_id": _stream_event_sequence,
                 "source_name": source_name,
                 "username": username,
+                "upload_session_id": upload_session_id,
+                "stream_game_id": stream_game_id,
                 "repository": repository,
                 "filename": filename,
                 "status": status,

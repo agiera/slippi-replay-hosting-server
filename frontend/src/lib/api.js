@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api/v1";
+const API_BASE = import.meta.env?.VITE_API_BASE_URL || "/api/v1";
 
 const ACCESS_TOKEN_KEY = "token";
 const REFRESH_TOKEN_KEY = "refresh_token";
@@ -175,7 +175,44 @@ export async function fetchStreamStatus(tournamentId) {
   if (!res.ok) {
     throw new Error(await extractError(res));
   }
-  return res.json();
+  return normalizeStreamStatusPayload(await res.json());
+}
+
+export function normalizeStreamEventPayload(payload) {
+  const connectCode = payload?.connect_code || payload?.slippi_code || null;
+  const name = payload?.name || payload?.display_name || payload?.tag || connectCode || null;
+  return {
+    ...payload,
+    name,
+    connect_code: connectCode,
+    character_id: payload?.character_id ?? null,
+    character_color: payload?.character_color ?? null,
+    port: payload?.port ?? null,
+    type: payload?.type ?? null,
+    is_cpu: Boolean(payload?.is_cpu),
+    is_winner: payload?.is_winner ?? null,
+    rank: payload?.rank ?? null,
+    rating: payload?.rating ?? null,
+  };
+}
+
+export function normalizeStreamStatusPayload(payload, fallbackEvents = []) {
+  const normalizedSources = (Array.isArray(payload?.sources) ? payload.sources : []).map((source) => {
+    const normalizedPreview = (Array.isArray(source?.player_preview) ? source.player_preview : []).map(
+      normalizeStreamEventPayload,
+    );
+
+    return {
+      ...source,
+      player_preview: normalizedPreview,
+    };
+  });
+
+  return {
+    tournament: payload?.tournament || null,
+    sources: normalizedSources,
+    events: Array.isArray(payload?.events) ? payload.events : fallbackEvents,
+  };
 }
 
 export function openStreamEvents(onEvent, { tournamentId } = {}) {

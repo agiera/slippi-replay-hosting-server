@@ -277,6 +277,7 @@ def persist_replay_upload(
     original_name: str,
     data: bytes,
     metadata_override: dict | None = None,
+    stream_game_id: str | None = None,
     parse_replay=parse_slippi_bytes,
 ) -> File:
     if not original_name.lower().endswith((".slp", ".zlp")):
@@ -417,6 +418,7 @@ def persist_replay_upload(
             stage=parsed_replay.stage,
             start_time=parsed_replay.start_time,
             last_frame=parsed_replay.last_frame,
+            stream_game_id=stream_game_id,
             handwarmer_label=handwarmer.label,
             handwarmer_reason=handwarmer.reason,
             handwarmer_score=handwarmer.score,
@@ -459,6 +461,7 @@ def persist_replay_upload(
             stage=partial_stage,
             start_time=None,
             last_frame=None,
+            stream_game_id=stream_game_id,
             handwarmer_label=handwarmer.label,
             handwarmer_reason=handwarmer.reason,
             handwarmer_score=handwarmer.score,

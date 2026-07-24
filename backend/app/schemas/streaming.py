@@ -48,6 +48,8 @@ class SourcePublic(BaseModel):
 class LiveSourceStatusPublic(BaseModel):
     source_name: str
     username: str
+    upload_session_id: str | None = None
+    stream_game_id: str | None = None
     connected: bool
     repositories: list[str]
     resolved_tournament_name: str | None = None
@@ -62,6 +64,8 @@ class LiveSourceStatusPublic(BaseModel):
 class LiveReplayEventPublic(BaseModel):
     source_name: str
     username: str
+    upload_session_id: str | None = None
+    stream_game_id: str | None = None
     repository: str
     resolved_tournament_name: str | None = None
     filename: str

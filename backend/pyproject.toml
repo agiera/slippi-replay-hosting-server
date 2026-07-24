@@ -1,0 +1,25 @@
+[project]
+name = "slippi-replay-hosting-server-backend"
+version = "0.1.0"
+description = "FastAPI backend for Slippi replay hosting"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi==0.116.1",
+  "uvicorn[standard]==0.35.0",
+  "SQLAlchemy==2.0.41",
+  "psycopg[binary]==3.2.9",
+  "alembic==1.16.4",
+  "PyJWT==2.9.0",
+  "bcrypt==4.2.0",
+  "python-multipart==0.0.20",
+  "pydantic-settings==2.10.1",
+  "httpx==0.28.1",
+  "email-validator==2.2.0",
+  "pytest==8.4.1",
+  "peppi-py==0.8.6",
+  "pyftpdlib==2.1.0",
+]
+
+[tool.uv]
+# Keep a project-local env for local development workflows.
+package = false

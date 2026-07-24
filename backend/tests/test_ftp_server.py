@@ -356,11 +356,9 @@ def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
     with _stream_state_lock:
         state = dict(_source_connections[source_name])
     preview_by_port = {player["port"]: player for player in state["player_preview"]}
-    # Before the SLP roster lands, the sidecar seeds a temporary live preview so
-    # the UI can update immediately.
-    assert set(preview_by_port) == {1, 2}
-    assert preview_by_port[1]["firmware"] == "1.2.3"
-    assert preview_by_port[2]["display_name"] == "Sidecar Ghost"
+    # Before the SLP roster lands, sidecar data is buffered but does not seed a
+    # temporary live preview. The row should wait for parsed SLP metadata.
+    assert preview_by_port == {}
 
     # The partial-SLP parse then lands the roster; the earlier sidecar firmware
     # must now fill in on the matching port without keeping the sidecar-only port.
@@ -382,6 +380,93 @@ def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
     assert preview_by_port[1]["character_id"] == 9
     assert preview_by_port[1]["firmware"] == "1.2.3"
     assert preview_by_port[3]["character_id"] == 2
+
+
+def test_stream_preview_sidecar_seeds_baked_identity_fields_before_slp_roster():
+    source_name = "baked-sidecar-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    _set_source_player_preview(
+        source_name,
+        [
+            {
+                "port": 1,
+                "name": "Test User1",
+                "nametag": "TEST1",
+                "slippi": "TEST#001",
+                "firmware": "1.0.0",
+            },
+            {
+                "port": 4,
+                "name": "Test User4",
+                "nametag": "TEST4",
+                "slippi": "TEST#004",
+                "firmware": "1.0.0",
+            },
+        ],
+        enrich_only=True,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    assert state["player_preview"] == []
+    assert state["pending_enrichment"][1]["display_name"] == "Test User1"
+    assert state["pending_enrichment"][1]["tag"] == "TEST1"
+    assert state["pending_enrichment"][1]["slippi_code"] == "TEST#001"
+    assert state["pending_enrichment"][4]["display_name"] == "Test User4"
+    assert state["pending_enrichment"][4]["tag"] == "TEST4"
+    assert state["pending_enrichment"][4]["slippi_code"] == "TEST#004"
+
+
+def test_stream_preview_slp_roster_overrides_seeded_sidecar_identity_fields_but_keeps_firmware():
+    source_name = "baked-sidecar-overridden-source"
+
+    with _stream_state_lock:
+        _source_connections.clear()
+
+    _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+    _set_source_player_preview(
+        source_name,
+        [
+            {
+                "port": 1,
+                "name": "Test User1",
+                "nametag": "TEST1",
+                "slippi": "TEST#001",
+                "firmware": "1.0.0",
+            }
+        ],
+        enrich_only=True,
+    )
+
+    _set_source_player_preview(
+        source_name,
+        [
+            {
+                "port": 1,
+                "display_name": "Real Player",
+                "connect_code": "REAL#777",
+                "character_id": 9,
+                "type": 0,
+                "is_cpu": False,
+            }
+        ],
+        stage=31,
+    )
+
+    with _stream_state_lock:
+        state = dict(_source_connections[source_name])
+
+    preview = state["player_preview"][0]
+    assert state["stage_preview"] == 31
+    assert preview["display_name"] == "Real Player"
+    assert preview["slippi_code"] == "REAL#777"
+    assert preview["firmware"] == "1.0.0"
+    assert preview["character_id"] == 9
 
 
 def test_stream_phase_marks_ended_as_completion():
