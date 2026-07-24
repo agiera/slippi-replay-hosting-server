@@ -961,16 +961,25 @@ def get_stream_status(
             if source_name and source_name in source_names_in_snapshot:
                 resolved_tournament_by_repo_source[(repository_name, source_name)] = resolved_name
 
-    # Do not block stream polling on external profile lookups.
-    profile_by_code: dict[str, object] = {}
+    connect_codes: set[str] = set()
+    for source_row in snapshot["sources"]:
+        for preview in source_row.get("player_preview") or []:
+            slippi_code = (preview.get("slippi_code") or "").strip()
+            if slippi_code:
+                connect_codes.add(slippi_code)
+
+    profile_by_code = {code: fetch_profile_by_connect_code(code) for code in connect_codes}
 
     enriched_sources: list[dict] = []
     for source_row in snapshot["sources"]:
         source_payload = dict(source_row)
         enriched_preview = []
+        rank_lookup_complete = True
         for preview in source_row.get("player_preview") or []:
-            slippi_code = preview.get("slippi_code")
-            profile = profile_by_code.get(slippi_code)
+            slippi_code = (preview.get("slippi_code") or "").strip() or None
+            profile = profile_by_code.get(slippi_code) if slippi_code else None
+            if slippi_code and slippi_code not in profile_by_code:
+                rank_lookup_complete = False
             # Normalize the live preview into the exact same player shape the
             # finished-replay endpoint returns, using the same name resolution
             # (display_name -> tag -> connect_code). The controller sidecar only
@@ -991,6 +1000,7 @@ def get_stream_status(
                 }
             )
         source_payload["player_preview"] = enriched_preview
+        source_payload["rank_lookup_complete"] = rank_lookup_complete
 
         source_name = source_row.get("source_name")
         repositories = source_row.get("repositories") or []

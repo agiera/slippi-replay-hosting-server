@@ -58,6 +58,7 @@ class LiveSourceStatusPublic(BaseModel):
     updated_at: datetime | None = None
     last_activity_at: datetime | None = None
     stream_phase: str | None = None
+    rank_lookup_complete: bool = False
     player_preview: list[ReplayPlayerPublic] = Field(default_factory=list)
 
 

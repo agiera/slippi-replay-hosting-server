@@ -773,6 +773,7 @@ export default function Home() {
         try {
           const payload = JSON.parse(event.data || "{}");
           setStreamStatus((prev) => applySnapshotOrStatusFrame(prev, payload));
+          streamStatusRefreshScheduler.schedule();
           setStreamError("");
           if (event.type === "snapshot") {
             maybeRefreshReplayList(payload?.events || []);

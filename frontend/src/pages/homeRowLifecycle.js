@@ -58,6 +58,38 @@ function getResolvedTournamentName(file) {
   );
 }
 
+function isLiveSourceRankReady(source) {
+  if (source?.rank_lookup_complete === true) {
+    return true;
+  }
+  if (source?.rank_lookup_complete === false) {
+    return false;
+  }
+
+  const players = Array.isArray(source?.player_preview) ? source.player_preview : [];
+  if (players.length === 0) {
+    return false;
+  }
+
+  return players.every((player) => {
+    if (!player || typeof player !== "object") {
+      return true;
+    }
+
+    const isCpu = Boolean(player.is_cpu) || Number(player.type) === 1;
+    if (isCpu) {
+      return true;
+    }
+
+    const connectCode = String(player.connect_code || player.slippi_code || "").trim();
+    if (!connectCode) {
+      return true;
+    }
+
+    return player.rank != null || player.rating != null;
+  });
+}
+
 function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs, preservedTerminalRowKeys) {
   const streamSessionKey = getStreamSessionKey(source);
   const preserveTerminalRow = streamSessionKey && preservedTerminalRowKeys.has(streamSessionKey);
@@ -77,6 +109,10 @@ function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs, preser
   }
 
   if (!Array.isArray(source.player_preview) || source.player_preview.length === 0) {
+    return false;
+  }
+
+  if (!isLiveSourceRankReady(source)) {
     return false;
   }
 

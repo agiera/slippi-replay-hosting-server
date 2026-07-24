@@ -63,6 +63,47 @@ test("hides connected source until slp preview metadata exists", () => {
   assert.equal(rows.length, 0);
 });
 
+test("hides connected source until rank enrichment is ready", () => {
+  const now = Date.now();
+  const baseSource = {
+    source_name: "setup-rank",
+    username: "streamer",
+    connected: true,
+    stream_phase: "started",
+    repositories: ["public"],
+    connected_at: new Date(now - 10_000).toISOString(),
+    updated_at: new Date(now - 2_000).toISOString(),
+    last_activity_at: new Date(now - 2_000).toISOString(),
+    stream_game_id: "g-rank",
+    player_preview: [{ name: "P1", connect_code: "MANGO#0", port: 1 }],
+  };
+
+  const hiddenRows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [{ ...baseSource, rank_lookup_complete: false }],
+      events: [],
+    },
+    files: [],
+    nowMs: now,
+  });
+
+  assert.equal(hiddenRows.length, 0);
+
+  const visibleRows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [{ ...baseSource, rank_lookup_complete: true, player_preview: [{ name: "P1", connect_code: "MANGO#0", port: 1, rank: "Master_I", rating: 2200 }] }],
+      events: [],
+    },
+    files: [],
+    nowMs: now,
+  });
+
+  assert.equal(visibleRows.length, 1);
+  assert.equal(visibleRows[0].lifecycle, "live");
+});
+
 test("marks disconnected non-terminal source as finalizing", () => {
   const rows = mergeReplayRows({
     streamStatus: {
