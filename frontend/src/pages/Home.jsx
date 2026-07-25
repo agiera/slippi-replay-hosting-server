@@ -148,7 +148,7 @@ const SLIPPILAB_URL = (() => {
   }
 
   if (typeof window !== "undefined" && window.location?.origin) {
-    return window.location.origin.replace(/\/$/, "");
+    return `${window.location.origin.replace(/\/$/, "")}/slippilab`;
   }
 
   return "";
@@ -903,15 +903,12 @@ export default function Home() {
 
   const isInitialLoading = loading && files.length === 0;
 
-  async function openViewerInNewTab(fileId) {
-    if (!fileId) {
-      return;
+  function buildSlippiLabViewerUrl(replayUrl) {
+    const replayTarget = String(replayUrl || "").trim();
+    if (!replayTarget || !SLIPPILAB_URL) {
+      return "";
     }
-    const replayUrl = buildReplayDownloadUrl(fileId);
-
-    setError("");
-    const viewerUrl = `${SLIPPILAB_URL}?replayUrl=${encodeURIComponent(replayUrl)}`;
-    window.open(viewerUrl, "_blank", "noopener,noreferrer");
+    return `${SLIPPILAB_URL}?replayUrl=${encodeURIComponent(replayTarget)}`;
   }
 
   function downloadReplay(fileId) {
@@ -1066,6 +1063,7 @@ export default function Home() {
                   const isLiveRow = row.lifecycle === "live";
                   const isStreamingLifecycle = row.lifecycle === "live" || row.lifecycle === "finalizing";
                   const fileId = row.fileId;
+                  const viewerHref = buildSlippiLabViewerUrl(buildReplayDownloadUrl(fileId));
                   const repoTournamentLabel = row.repository_label || "-";
                   const sourceLabel = row.source_label || "-";
                   const streamBadgeLabel = row.lifecycle === "finalizing" ? "FINALIZING" : "LIVE";
@@ -1144,14 +1142,19 @@ export default function Home() {
                             >
                               View in Slippi
                             </a>
-                            <button
-                              type="button"
+                            <a
                               className="viewer-row-btn"
-                              onClick={() => void openViewerInNewTab(fileId)}
-                              disabled={!fileId}
+                              href={viewerHref || "#"}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(event) => {
+                                if (!viewerHref) {
+                                  event.preventDefault();
+                                }
+                              }}
                             >
                               View on SlippiLab
-                            </button>
+                            </a>
                             <button
                               type="button"
                               className="viewer-row-btn"

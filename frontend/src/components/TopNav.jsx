@@ -3,7 +3,18 @@ import { Link } from "react-router-dom";
 
 import { getAccessToken, logout } from "../lib/api";
 
-const SLIPPILAB_URL = (import.meta.env.VITE_SLIPPILAB_URL || "http://localhost:4173").replace(/\/$/, "");
+const SLIPPILAB_URL = (() => {
+  const configured = String(import.meta.env.VITE_SLIPPILAB_URL || "").trim();
+  if (configured) {
+    return configured.replace(/\/$/, "");
+  }
+
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin.replace(/\/$/, "")}/slippilab`;
+  }
+
+  return "";
+})();
 
 export default function TopNav() {
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getAccessToken()));
