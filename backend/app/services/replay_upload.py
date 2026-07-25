@@ -278,6 +278,7 @@ def persist_replay_upload(
     data: bytes,
     metadata_override: dict | None = None,
     stream_game_id: str | None = None,
+    upload_started_at: datetime | None = None,
     parse_replay=parse_slippi_bytes,
 ) -> File:
     if not original_name.lower().endswith((".slp", ".zlp")):
@@ -368,7 +369,8 @@ def persist_replay_upload(
             partial_stage = None
 
     replay_start = _parse_start_time(parsed_replay.start_time) if parsed_replay else None
-    folder_time = replay_start or now
+    live_upload_start = upload_started_at if stream_game_id and upload_started_at is not None else None
+    folder_time = live_upload_start or replay_start or now
     folder_rel = f"uploads/{safe_repo_name}/{safe_collection_name}/{folder_time.astimezone(timezone.utc).strftime('%Y/%m/%d')}"
     target_dir = Path(settings.REPLAY_STORAGE_DIR) / folder_rel
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -411,12 +413,16 @@ def persist_replay_upload(
         return profile
 
     if parsed_replay is not None:
+        game_start_time = parsed_replay.start_time
+        if live_upload_start is not None:
+            game_start_time = live_upload_start.astimezone(timezone.utc).isoformat()
+
         game_row = Game(
             file_id=row._id,
             is_ranked=0,
             is_teams=parsed_replay.is_teams,
             stage=parsed_replay.stage,
-            start_time=parsed_replay.start_time,
+            start_time=game_start_time,
             last_frame=parsed_replay.last_frame,
             stream_game_id=stream_game_id,
             handwarmer_label=handwarmer.label,
@@ -454,12 +460,13 @@ def persist_replay_upload(
             return row
 
         # Persist stage/player fallback so rows can still render when full parse fails.
+        game_start_time = live_upload_start.astimezone(timezone.utc).isoformat() if live_upload_start is not None else None
         game_row = Game(
             file_id=row._id,
             is_ranked=0,
             is_teams=0,
             stage=partial_stage,
-            start_time=None,
+            start_time=game_start_time,
             last_frame=None,
             stream_game_id=stream_game_id,
             handwarmer_label=handwarmer.label,

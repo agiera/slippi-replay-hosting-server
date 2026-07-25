@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.security import create_access_token
@@ -780,6 +781,66 @@ def test_persist_replay_upload_prefers_parsed_replay_data_over_metadata_override
     assert players[1].display_name == "Zain"
     assert players[1].connect_code == "ZAIN#001"
     assert players[1].character_id == 18
+
+
+def test_persist_replay_upload_uses_upload_start_time_for_live_stream_game(db_session, tmp_path):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+    token_row = db_session.scalar(select(ApiToken).where(ApiToken.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()))
+    assert token_row is not None
+
+    fake_parsed = ParsedReplayData(
+        stage=31,
+        start_time="2001-01-01T00:00:00Z",
+        last_frame=9000,
+        is_teams=0,
+        players=[
+            {
+                "port": 1,
+                "type": 0,
+                "character_id": 2,
+                "connect_code": "MANGO#001",
+                "display_name": "Mango",
+                "tag": "Mang0",
+                "user_id": "uid-mango",
+            },
+            {
+                "port": 2,
+                "type": 0,
+                "character_id": 18,
+                "connect_code": "ZAIN#001",
+                "display_name": "Zain",
+                "tag": "Zain",
+                "user_id": "uid-zain",
+            },
+        ],
+        peppi_bytes=b"COMPRESSED-PEPPI",
+    )
+
+    upload_started_at = datetime(2026, 7, 24, 19, 30, 0, tzinfo=timezone.utc)
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        row = persist_replay_upload(
+            db_session,
+            token_row=token_row,
+            repository_name="public",
+            original_name="live.slp",
+            data=b"SLP-DATA",
+            stream_game_id="live-game-id",
+            upload_started_at=upload_started_at,
+            parse_replay=lambda *_args, **_kwargs: fake_parsed,
+        )
+        db_session.commit()
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+    game = db_session.scalar(select(Game).where(Game.file_id == row._id))
+    assert game is not None
+    assert game.stream_game_id == "live-game-id"
+    assert game.start_time == upload_started_at.isoformat()
+    assert row.folder.startswith("uploads/public/")
+    assert "/2026/07/24" in row.folder
 
 
 def test_persist_replay_upload_infers_ports_from_metadata_players_map(db_session, tmp_path):

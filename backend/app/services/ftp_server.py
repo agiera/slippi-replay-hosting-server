@@ -264,6 +264,7 @@ class ReplayFTPHandler(FTPHandler):
         with _stream_state_lock:
             source_state = _source_connections.get(self.ftp_session.source_name, {})
             stream_game_id = source_state.get("stream_game_id")
+            upload_started_at = source_state.get("active_upload_started_at")
 
         with SessionLocal() as db:
             token_row = db.scalar(
@@ -282,6 +283,7 @@ class ReplayFTPHandler(FTPHandler):
                 data=data,
                 metadata_override=applied_metadata_override,
                 stream_game_id=stream_game_id,
+                upload_started_at=upload_started_at,
             )
             refreshed_override = _refresh_source_metadata_from_file(
                 db,
@@ -688,6 +690,7 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 "last_completed_at": existing_last_completed_at,
                 "stream_phase": "started",
                 "active_staged_path": None,
+                "active_upload_started_at": None,
             }
         else:
             if source_name in _source_connections:
@@ -700,6 +703,9 @@ def _set_source_active_staged_file(source_name: str, staged_path: str | None) ->
         if source_name not in _source_connections:
             return
         _source_connections[source_name]["active_staged_path"] = staged_path
+        _source_connections[source_name]["active_upload_started_at"] = (
+            datetime.now(timezone.utc) if staged_path else None
+        )
 
 
 def get_source_live_replay_path(source_name: str) -> Path | None:
