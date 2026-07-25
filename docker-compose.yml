@@ -65,6 +65,7 @@ services:
         condition: service_healthy
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+      VITE_SLIPPILAB_URL: ${VITE_SLIPPILAB_URL:-http://localhost:4173}
       VITE_DEV_PROXY_TARGET: ${VITE_DEV_PROXY_TARGET:-http://backend:8000}
       VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-localhost,127.0.0.1}
     ports:
@@ -82,17 +83,6 @@ services:
       - "${PROXY_PORT:-8080}:80"
     volumes:
       - ./httpd/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
-
-  # slippilab:
-  #   image: node:20-alpine
-  #   working_dir: /app
-  #   command: >
-  #     sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 4173"
-  #   ports:
-  #     - "4173:4173"
-  #   volumes:
-  #     - ./slippilab:/app
-  #     - /app/node_modules
 
 volumes:
   pg_data:

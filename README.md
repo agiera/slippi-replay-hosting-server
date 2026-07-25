@@ -124,15 +124,27 @@ Initialize and update submodules:
 git submodule update --init --recursive
 ```
 
-Run SlippiLab locally (optional, for embedded viewer tab):
+Run SlippiLab locally (optional, standalone):
 
 ```bash
-docker compose up slippilab
+cd slippilab
+npm install
+npm run dev
 ```
 
 Configure frontend viewer URL with:
 
 - `VITE_SLIPPILAB_URL` (default: `http://localhost:4173`)
+
+For production, prefer hosting SlippiLab on a separate subdomain (for example
+`https://slippilab.example.com`) and set:
+
+```bash
+VITE_SLIPPILAB_URL=https://slippilab.example.com
+```
+
+This avoids subpath asset-base issues and does not require modifying SlippiLab
+source or Vite base config.
 
 Replay table rows include a `View` action that opens SlippiLab in a new tab and passes the replay download URL via `replayUrl`.
 
