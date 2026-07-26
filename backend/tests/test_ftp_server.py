@@ -15,6 +15,7 @@ from app.services.ftp_server import (
     _authenticate_ftp_credentials,
     _clear_source_metadata_override,
     _decode_site_slpmeta_ubjson,
+    _finalize_streamed_slp_raw_length,
     _normalize_metadata_override_payload,
     get_stream_events_since,
     _is_parsed_slippi_filename,
@@ -24,6 +25,31 @@ from app.services.ftp_server import (
     _store_source_metadata_override,
     _take_next_source_metadata_override,
 )
+
+
+def test_finalize_streamed_slp_raw_length():
+    header = b"{U\x03raw[$U#l\x00\x00\x00\x00"
+    raw = b"\x35\x1c\x36\x02\xf8\x37\x00"
+    footer = b"U\x08metadata{U\x07startAtSU\x132011-10-08T07:07:09U\x08playedOnSU\x0anintendont}}"
+
+    finalized = _finalize_streamed_slp_raw_length(header + raw + footer)
+
+    assert finalized[11:15] == len(raw).to_bytes(4, "big")
+    assert finalized[:11] == header[:11]
+    assert finalized[15:] == raw + footer
+
+
+def test_finalize_streamed_slp_raw_length_preserves_finalized_replay():
+    data = b"{U\x03raw[$U#l\x00\x00\x00\x03abcU\x08metadata{U\x07startAtSU\x00}}"
+
+    assert _finalize_streamed_slp_raw_length(data) is data
+
+
+def test_finalize_streamed_slp_raw_length_requires_footer():
+    data = b"{U\x03raw[$U#l\x00\x00\x00\x00abc"
+
+    with pytest.raises(ValueError, match="missing its metadata footer"):
+        _finalize_streamed_slp_raw_length(data)
 
 
 def test_ftp_auth_accepts_username_and_collection_token(db_session, testing_session_local):

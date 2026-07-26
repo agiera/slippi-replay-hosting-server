@@ -30,6 +30,28 @@ from app.services.peppi_ingest import (
 from app.services.replay_upload import persist_replay_upload
 
 
+_STREAMED_SLP_HEADER = b"{U\x03raw[$U#l\x00\x00\x00\x00"
+_SLP_METADATA_FOOTER_PREFIX = b"U\x08metadata{U\x07startAtSU"
+
+
+def _finalize_streamed_slp_raw_length(data: bytes) -> bytes:
+    """Backfill the raw byte count left blank by sequential Wii FTP uploads."""
+    if not data.startswith(_STREAMED_SLP_HEADER):
+        return data
+
+    footer_offset = data.rfind(_SLP_METADATA_FOOTER_PREFIX)
+    if footer_offset < len(_STREAMED_SLP_HEADER):
+        raise ValueError("streamed SLP is missing its metadata footer")
+
+    raw_length = footer_offset - len(_STREAMED_SLP_HEADER)
+    if raw_length > 0x7FFFFFFF:
+        raise ValueError("streamed SLP raw data is too large")
+
+    finalized = bytearray(data)
+    finalized[11:15] = raw_length.to_bytes(4, byteorder="big", signed=False)
+    return bytes(finalized)
+
+
 @dataclass
 class FTPSessionContext:
     user_id: int
@@ -216,6 +238,7 @@ class ReplayFTPHandler(FTPHandler):
 
             replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
             self._session_replay_transfer_attempted = True
+            data = _finalize_streamed_slp_raw_length(data)
 
             self._persist_replay_and_record(
                 original_name=original_name,
