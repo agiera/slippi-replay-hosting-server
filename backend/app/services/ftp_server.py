@@ -109,6 +109,7 @@ class ReplayFTPHandler(FTPHandler):
     _session_replay_transfer_attempted: bool = False
     _session_started_event_emitted: bool = False
     _session_seen_stor_file_keys: set[str] = set()
+    _session_upload_context_by_file_key: dict[str, tuple[str | None, datetime | None]] = {}
     _pending_metadata_by_replay_name: dict[str, dict] = {}
     _partial_parse_stop: threading.Event | None = None
 
@@ -128,9 +129,10 @@ class ReplayFTPHandler(FTPHandler):
         self._session_replay_transfer_attempted = False
         self._session_started_event_emitted = False
         self._session_seen_stor_file_keys = set()
+        self._session_upload_context_by_file_key = {}
         self._pending_metadata_by_replay_name = {}
         print(
-            f"[FTP][TRACE] Login source='{context.source_name}' user='{context.username}' repos={sorted(context.repositories)}",
+            f"[FTP][TRACE] Login source='{context.source_name}' user='{context.username}' repos={sorted(context.repositories)} session_home='{context.session_home}'",
             flush=True,
         )
         _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
@@ -183,6 +185,21 @@ class ReplayFTPHandler(FTPHandler):
         # controller sidecar alone lacks CPUs, characters and stage).
         if self.ftp_session is not None and not self._is_metadata_sidecar_filename(file):
             _set_source_active_staged_file(self.ftp_session.source_name, str(file))
+            if stor_file_key:
+                with _stream_state_lock:
+                    source_state = _source_connections.get(self.ftp_session.source_name, {})
+                    self._session_upload_context_by_file_key[stor_file_key] = (
+                        source_state.get("stream_game_id"),
+                        source_state.get("active_upload_started_at"),
+                    )
+                captured_stream_game_id, captured_started_at = self._session_upload_context_by_file_key.get(
+                    stor_file_key,
+                    (None, None),
+                )
+                print(
+                    f"[FTP][TRACE] Bound STOR file_key='{stor_file_key}' to stream_game_id='{captured_stream_game_id}' upload_started_at='{captured_started_at}'",
+                    flush=True,
+                )
             self._start_live_partial_parse(Path(str(file)), self.ftp_session.source_name)
         super().ftp_STOR(file, mode)
 
@@ -267,10 +284,24 @@ class ReplayFTPHandler(FTPHandler):
             self._session_replay_transfer_attempted = True
             data = _finalize_streamed_slp_raw_length(data)
 
+            stream_game_id = None
+            upload_started_at = None
+            if file_key:
+                stream_game_id, upload_started_at = self._session_upload_context_by_file_key.get(
+                    file_key,
+                    (None, None),
+                )
+            print(
+                f"[FTP][TRACE] Finalizing file='{original_name}' file_key='{file_key}' captured_stream_game_id='{stream_game_id}' captured_upload_started_at='{upload_started_at}'",
+                flush=True,
+            )
+
             self._persist_replay_and_record(
                 original_name=original_name,
                 data=data,
                 replay_metadata_override=replay_metadata_override,
+                stream_game_id=stream_game_id,
+                upload_started_at=upload_started_at,
             )
         except Exception as exc:
             if self.ftp_session is not None:
@@ -285,6 +316,7 @@ class ReplayFTPHandler(FTPHandler):
         finally:
             if file_key:
                 self._session_seen_stor_file_keys.discard(file_key)
+                self._session_upload_context_by_file_key.pop(file_key, None)
             if self.ftp_session is not None and not self._is_metadata_sidecar_filename(staged_path.name):
                 _set_source_active_staged_file(self.ftp_session.source_name, None)
             try:
@@ -298,6 +330,8 @@ class ReplayFTPHandler(FTPHandler):
         original_name: str,
         data: bytes,
         replay_metadata_override: dict | None,
+        stream_game_id: str | None = None,
+        upload_started_at: datetime | None = None,
     ) -> None:
         """Persist a replay row and emit its stream events.
 
@@ -313,10 +347,22 @@ class ReplayFTPHandler(FTPHandler):
         )
 
         repository_name = self.ftp_session.repository_name
-        with _stream_state_lock:
-            source_state = _source_connections.get(self.ftp_session.source_name, {})
-            stream_game_id = source_state.get("stream_game_id")
-            upload_started_at = source_state.get("active_upload_started_at")
+        if stream_game_id is None or upload_started_at is None:
+            with _stream_state_lock:
+                source_state = _source_connections.get(self.ftp_session.source_name, {})
+                if stream_game_id is None:
+                    stream_game_id = source_state.get("stream_game_id")
+                if upload_started_at is None:
+                    upload_started_at = source_state.get("active_upload_started_at")
+            print(
+                f"[FTP][TRACE] Fallback stream context for replay '{original_name}': stream_game_id='{stream_game_id}' upload_started_at='{upload_started_at}'",
+                flush=True,
+            )
+        else:
+            print(
+                f"[FTP][TRACE] Using captured stream context for replay '{original_name}': stream_game_id='{stream_game_id}' upload_started_at='{upload_started_at}'",
+                flush=True,
+            )
 
         with SessionLocal() as db:
             token_row = db.scalar(
@@ -404,6 +450,7 @@ class ReplayFTPHandler(FTPHandler):
         finally:
             if file_key:
                 self._session_seen_stor_file_keys.discard(file_key)
+                self._session_upload_context_by_file_key.pop(file_key, None)
 
     def on_disconnect(self) -> None:
         self._stop_live_partial_parse()
