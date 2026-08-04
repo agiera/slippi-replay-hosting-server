@@ -113,6 +113,27 @@ class ReplayFTPHandler(FTPHandler):
     _pending_metadata_by_replay_name: dict[str, dict] = {}
     _partial_parse_stop: threading.Event | None = None
 
+    def _trace_scope(self) -> str:
+        if self.ftp_session is None:
+            return "source='-' upload_session_id='-'"
+        with _stream_state_lock:
+            source_state = _source_connections.get(self.ftp_session.source_name, {})
+            upload_session_id = source_state.get("upload_session_id")
+        return (
+            f"source='{self.ftp_session.source_name}' "
+            f"upload_session_id='{upload_session_id}'"
+        )
+
+    def _trace_upload_scope(
+        self,
+        *,
+        file_key: str | None,
+        stream_game_id: str | None,
+    ) -> str:
+        key = file_key or "-"
+        game = stream_game_id or "-"
+        return f"{self._trace_scope()} file_key='{key}' stream_game_id='{game}'"
+
     def pre_process_command(self, line: str, cmd: str, arg: str) -> None:
         try:
             print(f"[FTP][TRACE] CMD {cmd} arg='{arg or ''}'", flush=True)
@@ -132,7 +153,7 @@ class ReplayFTPHandler(FTPHandler):
         self._session_upload_context_by_file_key = {}
         self._pending_metadata_by_replay_name = {}
         print(
-            f"[FTP][TRACE] Login source='{context.source_name}' user='{context.username}' repos={sorted(context.repositories)} session_home='{context.session_home}'",
+            f"[FTP][TRACE] Login {self._trace_scope()} user='{context.username}' repos={sorted(context.repositories)} session_home='{context.session_home}'",
             flush=True,
         )
         _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
@@ -197,7 +218,7 @@ class ReplayFTPHandler(FTPHandler):
                     (None, None),
                 )
                 print(
-                    f"[FTP][TRACE] Bound STOR file_key='{stor_file_key}' to stream_game_id='{captured_stream_game_id}' upload_started_at='{captured_started_at}'",
+                    f"[FTP][TRACE] Bound STOR {self._trace_upload_scope(file_key=stor_file_key, stream_game_id=captured_stream_game_id)} upload_started_at='{captured_started_at}'",
                     flush=True,
                 )
             self._start_live_partial_parse(Path(str(file)), self.ftp_session.source_name)
@@ -292,7 +313,7 @@ class ReplayFTPHandler(FTPHandler):
                     (None, None),
                 )
             print(
-                f"[FTP][TRACE] Finalizing file='{original_name}' file_key='{file_key}' captured_stream_game_id='{stream_game_id}' captured_upload_started_at='{upload_started_at}'",
+                f"[FTP][TRACE] Finalizing file='{original_name}' {self._trace_upload_scope(file_key=file_key, stream_game_id=stream_game_id)} captured_upload_started_at='{upload_started_at}'",
                 flush=True,
             )
 
@@ -355,12 +376,12 @@ class ReplayFTPHandler(FTPHandler):
                 if upload_started_at is None:
                     upload_started_at = source_state.get("active_upload_started_at")
             print(
-                f"[FTP][TRACE] Fallback stream context for replay '{original_name}': stream_game_id='{stream_game_id}' upload_started_at='{upload_started_at}'",
+                f"[FTP][TRACE] Fallback stream context for replay '{original_name}': {self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id)} upload_started_at='{upload_started_at}'",
                 flush=True,
             )
         else:
             print(
-                f"[FTP][TRACE] Using captured stream context for replay '{original_name}': stream_game_id='{stream_game_id}' upload_started_at='{upload_started_at}'",
+                f"[FTP][TRACE] Using captured stream context for replay '{original_name}': {self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id)} upload_started_at='{upload_started_at}'",
                 flush=True,
             )
 
@@ -456,7 +477,7 @@ class ReplayFTPHandler(FTPHandler):
         self._stop_live_partial_parse()
         if self.ftp_session is not None:
             print(
-                f"[FTP][TRACE] Disconnect source='{self.ftp_session.source_name}' transfer_attempted={self._session_transfer_attempted}",
+                f"[FTP][TRACE] Disconnect {self._trace_scope()} transfer_attempted={self._session_transfer_attempted}",
                 flush=True,
             )
             if self._session_replay_transfer_attempted and _session_started_without_completion(self.ftp_session.source_name):
@@ -1206,6 +1227,17 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
             _source_connections[source_name]["stream_phase"] = status
             if status in {"completed", "ended"}:
                 _source_connections[source_name]["last_completed_at"] = event_time
+
+    print(
+        "[FTP][EVENT] "
+        f"source='{source_name}' "
+        f"upload_session_id='{upload_session_id}' "
+        f"stream_game_id='{stream_game_id}' "
+        f"status='{status}' "
+        f"repository='{repository}' "
+        f"filename='{filename}'",
+        flush=True,
+    )
 
 
 def get_stream_status_snapshot(source_names: set[str] | None = None) -> dict[str, list[dict]]:
