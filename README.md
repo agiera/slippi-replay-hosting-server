@@ -36,6 +36,12 @@ A minimal full-stack starter with:
    docker compose up --build
    ```
 
+   By default, the frontend container runs in production-safe mode
+   (`FRONTEND_MODE=production`), which serves built assets via `vite preview`
+   and avoids dev-only HMR websocket traffic.
+
+   For local HMR development, set `FRONTEND_MODE=development` in `.env`.
+
 3. Open apps:
 
    - Frontend: http://localhost:5173
