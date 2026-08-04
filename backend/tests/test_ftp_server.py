@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import pytest
 from pyftpdlib.authorizers import AuthenticationFailed
@@ -10,6 +11,7 @@ from app.models.source_metadata import SourceMetadata
 from app.models.user import User
 from app.services.ftp_server import (
     _record_stream_event,
+    _prepare_session_home,
     _set_source_connection_state,
     _set_source_player_preview,
     _authenticate_ftp_credentials,
@@ -573,3 +575,16 @@ def test_get_stream_events_since_returns_incremental_ordered_events():
     tail_events = get_stream_events_since(first_cursor, {source_name})
     assert len(tail_events) >= 1
     assert tail_events[-1]["status"] == "ended"
+
+
+def test_prepare_session_home_uses_unique_session_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.ftp_server.settings.FTP_STAGING_DIR", str(tmp_path))
+
+    first_home = _prepare_session_home("agiera", {"public"}, session_key="session-a")
+    second_home = _prepare_session_home("agiera", {"public"}, session_key="session-b")
+
+    assert first_home != second_home
+    assert Path(first_home).exists()
+    assert Path(second_home).exists()
+    assert (Path(first_home) / "public").exists()
+    assert (Path(second_home) / "public").exists()

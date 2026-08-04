@@ -133,6 +133,70 @@ test("marks disconnected non-terminal source as finalizing", () => {
   assert.equal(rows[0].source_label, "setup-1");
 });
 
+test("marks connected terminal source as finalizing", () => {
+  const rows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [
+        {
+          source_name: "setup-1",
+          username: "streamer",
+          connected: true,
+          stream_phase: "ended",
+          player_preview: [{ name: "P1", port: 1 }],
+          repositories: ["public"],
+          connected_at: isoNowMinus(20_000),
+          updated_at: isoNowMinus(1_000),
+          last_activity_at: isoNowMinus(1_000),
+          stream_game_id: "g-2",
+        },
+      ],
+      events: [
+        {
+          source_name: "setup-1",
+          status: "ended",
+          timestamp: isoNowMinus(900),
+          stream_game_id: "g-2",
+        },
+      ],
+    },
+    files: [],
+    nowMs: Date.now(),
+    preservedTerminalRows: ["stream:g-2"],
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lifecycle, "finalizing");
+});
+
+test("marks connected pending-parse source as finalizing", () => {
+  const rows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [
+        {
+          source_name: "setup-pending",
+          username: "streamer",
+          connected: true,
+          stream_phase: "pending_parse",
+          player_preview: [{ name: "P1", port: 1 }],
+          repositories: ["public"],
+          connected_at: isoNowMinus(20_000),
+          updated_at: isoNowMinus(1_000),
+          last_activity_at: isoNowMinus(1_000),
+          stream_game_id: "g-pending",
+        },
+      ],
+      events: [],
+    },
+    files: [],
+    nowMs: Date.now(),
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lifecycle, "finalizing");
+});
+
 test("hides live row when terminal event arrives even without completed row", () => {
   const now = Date.now();
   const connectedAt = new Date(now - 30_000).toISOString();

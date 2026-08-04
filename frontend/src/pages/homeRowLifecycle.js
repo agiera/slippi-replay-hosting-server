@@ -1,7 +1,25 @@
 const TERMINAL_STREAM_PHASES = new Set(["ended", "completed", "abandoned", "incomplete", "failed"]);
+const FINALIZING_STREAM_PHASES = new Set(["pending_parse", "slippi_file_metadata"]);
 
 function isTerminalStreamStatus(status) {
   return TERMINAL_STREAM_PHASES.has(String(status || "").toLowerCase());
+}
+
+function isFinalizingStreamStatus(status) {
+  return FINALIZING_STREAM_PHASES.has(String(status || "").toLowerCase());
+}
+
+function isActivelyStreaming(source) {
+  if (!source?.connected) {
+    return false;
+  }
+
+  const phase = String(source?.stream_phase || "").toLowerCase();
+  if (isTerminalStreamStatus(phase) || isFinalizingStreamStatus(phase)) {
+    return false;
+  }
+
+  return true;
 }
 
 function getStreamSessionKey(row) {
@@ -173,6 +191,7 @@ function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs, preser
 
 function toLiveReplayRow(source, nowMs, tournament) {
   const players = Array.isArray(source.player_preview) ? source.player_preview : [];
+  const activelyStreaming = isActivelyStreaming(source);
   const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
   const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
   const lastActivityAtMs = source.last_activity_at ? new Date(source.last_activity_at).getTime() : NaN;
@@ -182,7 +201,7 @@ function toLiveReplayRow(source, nowMs, tournament) {
   const durationBaseMs = !Number.isNaN(connectedAtMs)
     ? connectedAtMs
     : (!Number.isNaN(updatedAtMs) ? updatedAtMs : lastActivityAtMs);
-  const durationNowMs = source.connected ? nowMs : endAtMs;
+  const durationNowMs = activelyStreaming ? nowMs : endAtMs;
   const playedAt = source.connected_at || source.updated_at || source.last_activity_at || null;
   const gameDuration = Number.isNaN(durationBaseMs) || Number.isNaN(durationNowMs)
     ? 0
@@ -197,7 +216,7 @@ function toLiveReplayRow(source, nowMs, tournament) {
 
   return {
     ...source,
-    lifecycle: source.connected ? "live" : "finalizing",
+    lifecycle: activelyStreaming ? "live" : "finalizing",
     rowKey: source.stream_game_id
       ? `stream:${source.stream_game_id}`
       : `live:${sourceName}:${source.username || "unknown"}`,

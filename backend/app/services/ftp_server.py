@@ -60,6 +60,7 @@ class FTPSessionContext:
     source_name: str
     repositories: set[str]
     repository_name: str
+    session_home: str
 
 
 class SourceTokenAuthorizer(DummyAuthorizer):
@@ -71,7 +72,20 @@ class SourceTokenAuthorizer(DummyAuthorizer):
     def validate_authentication(self, username: str, password: str, handler) -> None:
         context = _authenticate_ftp_credentials(username=username, token_value=password)
 
-        session_home = _prepare_session_home(username=username, repositories=context.repositories)
+        session_home = _prepare_session_home(
+            username=username,
+            repositories=context.repositories,
+            session_key=str(uuid.uuid4()),
+        )
+        context = FTPSessionContext(
+            user_id=context.user_id,
+            token_id=context.token_id,
+            username=context.username,
+            source_name=context.source_name,
+            repositories=context.repositories,
+            repository_name=context.repository_name,
+            session_home=session_home,
+        )
 
         with self._lock:
             if self.has_user(username):
@@ -93,6 +107,8 @@ class ReplayFTPHandler(FTPHandler):
     ftp_session: FTPSessionContext | None = None
     _session_transfer_attempted: bool = False
     _session_replay_transfer_attempted: bool = False
+    _session_started_event_emitted: bool = False
+    _session_seen_stor_file_keys: set[str] = set()
     _pending_metadata_by_replay_name: dict[str, dict] = {}
     _partial_parse_stop: threading.Event | None = None
 
@@ -110,22 +126,14 @@ class ReplayFTPHandler(FTPHandler):
         self.ftp_session = context
         self._session_transfer_attempted = False
         self._session_replay_transfer_attempted = False
+        self._session_started_event_emitted = False
+        self._session_seen_stor_file_keys = set()
         self._pending_metadata_by_replay_name = {}
         print(
             f"[FTP][TRACE] Login source='{context.source_name}' user='{context.username}' repos={sorted(context.repositories)}",
             flush=True,
         )
         _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
-        # Do not seed a live preview from the sidecar/override. The live row is only
-        # shown once the partial SLP parse yields real players + stage, so the brief
-        # controller-metadata-only state is never displayed.
-        _record_stream_event(
-            source_name=context.source_name,
-            username=context.username,
-            repository=context.repository_name,
-            filename="",
-            status="started",
-        )
         super().on_login(username)
 
     def ftp_TYPE(self, line: str) -> None:
@@ -138,8 +146,20 @@ class ReplayFTPHandler(FTPHandler):
 
     def ftp_STOR(self, file: str, mode: str = "w") -> None:
         self._session_transfer_attempted = True
+        stor_file_key = self._session_file_key(file)
+        if stor_file_key:
+            self._session_seen_stor_file_keys.add(stor_file_key)
         if not self._is_metadata_sidecar_filename(file):
             self._session_replay_transfer_attempted = True
+            if self.ftp_session is not None and not self._session_started_event_emitted:
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=self.ftp_session.repository_name,
+                    filename=Path(str(file)).name,
+                    status="started",
+                )
+                self._session_started_event_emitted = True
         # Wii clients may upload to dynamic folders (e.g. /ngpr-17/...).
         # Ensure parent directories exist so STOR does not fail with 550.
         try:
@@ -186,11 +206,18 @@ class ReplayFTPHandler(FTPHandler):
         staged_path = Path(file)
         repository_name = "unknown"
         self._session_transfer_attempted = True
+        file_key = self._session_file_key(file)
         # The transfer finished; the full-file parse below supersedes the live
         # partial-parse worker, so stop it.
         self._stop_live_partial_parse()
         try:
             if self.ftp_session is None:
+                return
+            if file_key and file_key not in self._session_seen_stor_file_keys:
+                print(
+                    f"[FTP][TRACE] Ignoring completion for untracked file '{staged_path.name}'",
+                    flush=True,
+                )
                 return
 
             original_name = staged_path.name
@@ -256,6 +283,8 @@ class ReplayFTPHandler(FTPHandler):
                 )
             print(f"[FTP] Failed to ingest uploaded file '{staged_path}': {exc}", flush=True)
         finally:
+            if file_key:
+                self._session_seen_stor_file_keys.discard(file_key)
             if self.ftp_session is not None and not self._is_metadata_sidecar_filename(staged_path.name):
                 _set_source_active_staged_file(self.ftp_session.source_name, None)
             try:
@@ -352,6 +381,10 @@ class ReplayFTPHandler(FTPHandler):
     def on_incomplete_file_received(self, file: str) -> None:
         self._stop_live_partial_parse()
         self._session_transfer_attempted = True
+        file_key = self._session_file_key(file)
+        if file_key and file_key not in self._session_seen_stor_file_keys:
+            print(f"[FTP][TRACE] Ignoring incomplete callback for untracked file '{Path(file).name}'", flush=True)
+            return
         if not self._is_metadata_sidecar_filename(Path(file).name):
             self._session_replay_transfer_attempted = True
             if self.ftp_session is not None:
@@ -368,6 +401,9 @@ class ReplayFTPHandler(FTPHandler):
             Path(file).unlink(missing_ok=True)
         except Exception:
             pass
+        finally:
+            if file_key:
+                self._session_seen_stor_file_keys.discard(file_key)
 
     def on_disconnect(self) -> None:
         self._stop_live_partial_parse()
@@ -395,12 +431,26 @@ class ReplayFTPHandler(FTPHandler):
                 connected=False,
             )
             _set_source_active_staged_file(self.ftp_session.source_name, None)
+            try:
+                shutil.rmtree(self.ftp_session.session_home, ignore_errors=True)
+            except Exception:
+                pass
         self.authorizer.clear_context(self)
         super().on_disconnect()
 
     @staticmethod
     def _is_metadata_sidecar_filename(filename: str) -> bool:
         return str(filename).lower().endswith(".meta.json")
+
+    @staticmethod
+    def _session_file_key(value: str) -> str:
+        try:
+            normalized = str(value or "").replace("\\", "/").strip()
+            if not normalized:
+                return ""
+            return Path(normalized).name
+        except Exception:
+            return ""
 
     @staticmethod
     def _replay_name_from_metadata_sidecar(filename: str) -> str:
@@ -1203,14 +1253,13 @@ def _authenticate_ftp_credentials(
             source_name=token_row.source_name,
             repositories=repositories,
             repository_name=repository_name,
+            session_home="",
         )
 
 
-def _prepare_session_home(username: str, repositories: set[str]) -> str:
+def _prepare_session_home(username: str, repositories: set[str], session_key: str) -> str:
     base_dir = Path(settings.FTP_STAGING_DIR)
-    session_dir = base_dir / username
-    if session_dir.exists():
-        shutil.rmtree(session_dir, ignore_errors=True)
+    session_dir = base_dir / username / session_key
     session_dir.mkdir(parents=True, exist_ok=True)
 
     for repository_name in repositories:
