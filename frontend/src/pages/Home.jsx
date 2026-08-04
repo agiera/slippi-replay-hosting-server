@@ -936,8 +936,6 @@ export default function Home() {
       return;
     }
 
-    // Keep the source filter in sync with the stream action.
-    setFilters((prev) => ({ ...prev, source: normalizedSource }));
     const slippiLink = buildSlippiMirrorDeepLink(normalizedSource);
     if (!slippiLink) {
       setStreamError(`No replay available yet for source ${normalizedSource}.`);

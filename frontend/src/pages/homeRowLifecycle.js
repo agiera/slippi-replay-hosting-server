@@ -213,7 +213,7 @@ function toLiveReplayRow(source, nowMs, tournament) {
     stream_repositories: source.repositories || [],
     resolved_tournament_name: resolvedTournamentName,
     repository_label: resolvedTournamentName || source.repositories?.[0] || "Streaming",
-    source_label: source.connected ? "Live stream" : "Finalizing upload",
+    source_label: sourceName || "-",
     name: `live:${sourceName}`,
   };
 }

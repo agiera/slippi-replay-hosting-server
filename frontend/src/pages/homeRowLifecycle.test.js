@@ -33,7 +33,7 @@ test("keeps connected live source as live row", () => {
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].lifecycle, "live");
-  assert.equal(rows[0].source_label, "Live stream");
+  assert.equal(rows[0].source_label, "setup-1");
 });
 
 test("hides connected source until slp preview metadata exists", () => {
@@ -130,7 +130,7 @@ test("marks disconnected non-terminal source as finalizing", () => {
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].lifecycle, "finalizing");
-  assert.equal(rows[0].source_label, "Finalizing upload");
+  assert.equal(rows[0].source_label, "setup-1");
 });
 
 test("hides live row when terminal event arrives even without completed row", () => {
