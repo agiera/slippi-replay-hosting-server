@@ -93,7 +93,7 @@ test("keeps connected source visible beyond stale timeout window", () => {
   assert.equal(rows[0].lifecycle, "live");
 });
 
-test("hides connected source until rank enrichment is ready", () => {
+test("shows connected source while rank enrichment is pending", () => {
   const now = Date.now();
   const baseSource = {
     source_name: "setup-rank",
@@ -118,7 +118,8 @@ test("hides connected source until rank enrichment is ready", () => {
     nowMs: now,
   });
 
-  assert.equal(hiddenRows.length, 0);
+  assert.equal(hiddenRows.length, 1);
+  assert.equal(hiddenRows[0].lifecycle, "live");
 
   const visibleRows = mergeReplayRows({
     streamStatus: {

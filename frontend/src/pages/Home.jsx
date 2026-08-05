@@ -653,7 +653,6 @@ export default function Home() {
   const [streamStatus, setStreamStatus] = useState({ tournament: null, sources: [], events: [] });
   const [streamError, setStreamError] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
-  const [hasSettledInitialReplayLoad, setHasSettledInitialReplayLoad] = useState(false);
   const [preservedTerminalRows, setPreservedTerminalRows] = useState([]);
   const sentinelRef = useRef(null);
   const latestCompletedEventMsRef = useRef(0);
@@ -663,10 +662,10 @@ export default function Home() {
       streamStatus,
       files,
       nowMs,
-      includeLiveRows: hasSettledInitialReplayLoad,
+      includeLiveRows: true,
       preservedTerminalRows,
     }),
-    [streamStatus, files, nowMs, hasSettledInitialReplayLoad, preservedTerminalRows]
+    [streamStatus, files, nowMs, preservedTerminalRows]
   );
 
   const tablePlayerColumnCount = useMemo(() => {
@@ -744,7 +743,6 @@ export default function Home() {
       setHasMore(false);
     } finally {
       setPreservedTerminalRows([]);
-      setHasSettledInitialReplayLoad(true);
       setLoading(false);
     }
   }, [debouncedFilters]);

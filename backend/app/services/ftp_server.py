@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -50,6 +51,28 @@ def _finalize_streamed_slp_raw_length(data: bytes) -> bytes:
     finalized = bytearray(data)
     finalized[11:15] = raw_length.to_bytes(4, byteorder="big", signed=False)
     return bytes(finalized)
+
+
+def _patch_streamed_slp_raw_length_for_partial_parse(data: bytes) -> bytes:
+    """Temporarily patch streamed SLP raw length for in-progress partial parsing.
+
+    Wii FTP streaming writes a placeholder zero raw-length in the header and
+    only backfills the true length once upload is complete. For live preview,
+    treat currently received bytes as raw payload so start-event parsing can
+    succeed before transfer completion.
+    """
+    if not data.startswith(_STREAMED_SLP_HEADER):
+        return data
+
+    if len(data) <= len(_STREAMED_SLP_HEADER):
+        return data
+
+    patched = bytearray(data)
+    raw_length = len(data) - len(_STREAMED_SLP_HEADER)
+    if raw_length > 0x7FFFFFFF:
+        raw_length = 0x7FFFFFFF
+    patched[11:15] = int(raw_length).to_bytes(4, byteorder="big", signed=False)
+    return bytes(patched)
 
 
 @dataclass
@@ -878,6 +901,9 @@ def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: 
     # attempt window can miss the first readable bytes and delay live updates
     # until final ingest.
     poll_seconds = 0.35
+    started_monotonic = time.monotonic()
+    last_trace_monotonic = started_monotonic
+    parse_attempt_count = 0
     while True:
         if stop_event.is_set():
             return
@@ -887,20 +913,36 @@ def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: 
             data = b""
 
         if data:
+            parse_attempt_count += 1
             try:
-                parsed = parse_slippi_start_partial(data, suffix=staged_path.suffix or ".slp")
+                parse_bytes = _patch_streamed_slp_raw_length_for_partial_parse(data)
+                parsed = parse_slippi_start_partial(parse_bytes, suffix=staged_path.suffix or ".slp")
             except Exception as exc:  # defensive: never let the worker crash the thread
                 import sys
                 print(
-                    f"[FTP][ERROR] Live partial parse failed for '{staged_path.name}': {exc}",
+                    f"[FTP][ERROR] Live partial parse failed source='{source_name}' file='{staged_path.name}' attempt={parse_attempt_count}: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
                 parsed = None
 
             if parsed is not None and (parsed.players or parsed.stage is not None):
+                elapsed = time.monotonic() - started_monotonic
+                print(
+                    f"[FTP][TRACE] Live partial parse resolved source='{source_name}' file='{staged_path.name}' attempts={parse_attempt_count} bytes={len(data)} stage={parsed.stage} players={len(parsed.players)} elapsed_s={elapsed:.2f}",
+                    flush=True,
+                )
                 _set_source_player_preview(source_name, parsed.players, stage=parsed.stage)
                 return
+
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_trace_monotonic >= 10:
+                elapsed = now_monotonic - started_monotonic
+                print(
+                    f"[FTP][TRACE] Live partial parse pending source='{source_name}' file='{staged_path.name}' attempts={parse_attempt_count} bytes={len(data)} elapsed_s={elapsed:.2f}",
+                    flush=True,
+                )
+                last_trace_monotonic = now_monotonic
 
         if stop_event.wait(poll_seconds):
             return
