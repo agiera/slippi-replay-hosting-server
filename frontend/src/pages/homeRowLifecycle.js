@@ -189,9 +189,37 @@ function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs, preser
   return !hasFinalizedRowForSession;
 }
 
-function toLiveReplayRow(source, nowMs, tournament) {
+function hasTerminalEventForSession(source, streamEvents) {
+  const sourceName = (source?.source_name || "").trim();
+  const sourceStreamGameId = String(source?.stream_game_id || "").trim();
+  const connectedAtMs = source?.connected_at ? new Date(source.connected_at).getTime() : NaN;
+
+  return (streamEvents || []).some((event) => {
+    const eventStreamGameId = String(event?.stream_game_id || "").trim();
+    if (sourceStreamGameId && eventStreamGameId) {
+      if (eventStreamGameId !== sourceStreamGameId) {
+        return false;
+      }
+    } else if ((event?.source_name || "").trim() !== sourceName) {
+      return false;
+    }
+
+    if (!isTerminalStreamStatus(event?.status)) {
+      return false;
+    }
+
+    if (Number.isNaN(connectedAtMs)) {
+      return true;
+    }
+
+    const eventMs = event?.timestamp ? new Date(event.timestamp).getTime() : NaN;
+    return !Number.isNaN(eventMs) && eventMs >= connectedAtMs - 5000;
+  });
+}
+
+function toLiveReplayRow(source, nowMs, tournament, terminalEventForSession = false) {
   const players = Array.isArray(source.player_preview) ? source.player_preview : [];
-  const activelyStreaming = isActivelyStreaming(source);
+  const activelyStreaming = isActivelyStreaming(source) && !terminalEventForSession;
   const connectedAtMs = source.connected_at ? new Date(source.connected_at).getTime() : NaN;
   const updatedAtMs = source.updated_at ? new Date(source.updated_at).getTime() : NaN;
   const lastActivityAtMs = source.last_activity_at ? new Date(source.last_activity_at).getTime() : NaN;
@@ -277,7 +305,10 @@ export function mergeReplayRows({
   const liveRows = includeLiveRows
     ? (streamStatus.sources || [])
         .filter((source) => isLiveSourceVisible(source, streamStatus.events, files, nowMs, preservedTerminalRowKeys))
-        .map((source) => toLiveReplayRow(source, nowMs, streamStatus.tournament))
+        .map((source) => {
+          const terminalEventForSession = hasTerminalEventForSession(source, streamStatus.events);
+          return toLiveReplayRow(source, nowMs, streamStatus.tournament, terminalEventForSession);
+        })
     : [];
 
   const usedCompletedStreamGameIds = new Set();

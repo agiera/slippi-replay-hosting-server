@@ -152,11 +152,11 @@ class ReplayFTPHandler(FTPHandler):
         self._session_seen_stor_file_keys = set()
         self._session_upload_context_by_file_key = {}
         self._pending_metadata_by_replay_name = {}
+        _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
         print(
             f"[FTP][TRACE] Login {self._trace_scope()} user='{context.username}' repos={sorted(context.repositories)} session_home='{context.session_home}'",
             flush=True,
         )
-        _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
         super().on_login(username)
 
     def ftp_TYPE(self, line: str) -> None:

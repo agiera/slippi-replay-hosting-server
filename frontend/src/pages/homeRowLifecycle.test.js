@@ -273,6 +273,45 @@ test("keeps terminal row visible during replacement refresh window", () => {
   assert.equal(rows[0].lifecycle, "finalizing");
 });
 
+test("shows preserved terminal row as finalizing even when stream_phase is stale started", () => {
+  const now = Date.now();
+  const connectedAt = new Date(now - 30_000).toISOString();
+
+  const rows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [
+        {
+          source_name: "setup-2",
+          username: "streamer",
+          connected: true,
+          stream_phase: "started",
+          player_preview: [{ name: "P1", port: 1 }],
+          repositories: ["public"],
+          connected_at: connectedAt,
+          updated_at: new Date(now - 1_000).toISOString(),
+          last_activity_at: new Date(now - 1_000).toISOString(),
+          stream_game_id: "g-3",
+        },
+      ],
+      events: [
+        {
+          source_name: "setup-2",
+          status: "ended",
+          timestamp: new Date(now - 500).toISOString(),
+          stream_game_id: "g-3",
+        },
+      ],
+    },
+    files: [],
+    nowMs: now,
+    preservedTerminalRows: ["stream:g-3"],
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lifecycle, "finalizing");
+});
+
 test("replaces live row when completed row with same stream_game_id exists", () => {
   const rows = mergeReplayRows({
     streamStatus: {
