@@ -904,15 +904,32 @@ def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: 
     started_monotonic = time.monotonic()
     last_trace_monotonic = started_monotonic
     parse_attempt_count = 0
+    empty_read_count = 0
     while True:
         if stop_event.is_set():
+            if parse_attempt_count == 0:
+                elapsed = time.monotonic() - started_monotonic
+                print(
+                    f"[FTP][TRACE] Live partial parse stopped before first attempt source='{source_name}' file='{staged_path.name}' empty_reads={empty_read_count} elapsed_s={elapsed:.2f}",
+                    flush=True,
+                )
             return
         try:
             data = staged_path.read_bytes()
         except OSError:
             data = b""
 
-        if data:
+        if not data:
+            empty_read_count += 1
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_trace_monotonic >= 10:
+                elapsed = now_monotonic - started_monotonic
+                print(
+                    f"[FTP][TRACE] Live partial parse waiting for bytes source='{source_name}' file='{staged_path.name}' empty_reads={empty_read_count} attempts={parse_attempt_count} elapsed_s={elapsed:.2f}",
+                    flush=True,
+                )
+                last_trace_monotonic = now_monotonic
+        else:
             parse_attempt_count += 1
             try:
                 parse_bytes = _patch_streamed_slp_raw_length_for_partial_parse(data)
