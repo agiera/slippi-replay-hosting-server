@@ -63,6 +63,36 @@ test("hides connected source until slp preview metadata exists", () => {
   assert.equal(rows.length, 0);
 });
 
+test("keeps connected source visible beyond stale timeout window", () => {
+  const now = Date.now();
+  const rows = mergeReplayRows({
+    streamStatus: {
+      tournament: null,
+      sources: [
+        {
+          source_name: "setup-long",
+          username: "streamer",
+          connected: true,
+          stream_phase: "started",
+          player_preview: [{ name: "P1", port: 1, connect_code: "P1#111", rank: "Gold_I", rating: 1600 }],
+          repositories: ["public"],
+          connected_at: new Date(now - 5 * 60_000).toISOString(),
+          updated_at: new Date(now - 5 * 60_000).toISOString(),
+          last_activity_at: new Date(now - 5 * 60_000).toISOString(),
+          stream_game_id: "g-long",
+          rank_lookup_complete: true,
+        },
+      ],
+      events: [],
+    },
+    files: [],
+    nowMs: now,
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lifecycle, "live");
+});
+
 test("hides connected source until rank enrichment is ready", () => {
   const now = Date.now();
   const baseSource = {

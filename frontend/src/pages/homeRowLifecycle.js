@@ -119,7 +119,7 @@ function isLiveSourceVisible(source, streamEvents, completedFiles, nowMs, preser
   const sourceLastActivityMs = source.last_activity_at
     ? new Date(source.last_activity_at).getTime()
     : (source.updated_at ? new Date(source.updated_at).getTime() : NaN);
-  if (!Number.isNaN(sourceLastActivityMs)) {
+  if (!source.connected && !Number.isNaN(sourceLastActivityMs)) {
     const staleDisconnectedWindowMs = 2 * 60 * 1000;
     if (nowMs - sourceLastActivityMs > staleDisconnectedWindowMs) {
       return false;
