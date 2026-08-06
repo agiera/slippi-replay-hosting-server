@@ -17,6 +17,7 @@ class Player(Base):
     type: Mapped[int | None] = mapped_column(Integer, nullable=True)
     character_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     character_color: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    costume_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_winner: Mapped[int | None] = mapped_column(Integer, nullable=True)
     start_stocks: Mapped[int | None] = mapped_column(Integer, nullable=True)

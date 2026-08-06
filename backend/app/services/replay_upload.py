@@ -199,6 +199,7 @@ def _players_from_metadata_override(metadata_override: dict | None) -> list[dict
                 "port": port,
                 "type": 0,
                 "character_id": character_id,
+                "costume_id": None,
                 "connect_code": override.get("slippi_code"),
                 "display_name": override.get("display_name"),
                 "tag": override.get("tag"),
@@ -246,6 +247,11 @@ def _apply_replay_metadata_overrides(parsed_replay, metadata_override: dict | No
         if override.get("character") is not None and player.get("character_id") is None:
             try:
                 player["character_id"] = int(override.get("character"))
+            except (TypeError, ValueError):
+                pass
+        if override.get("costume") is not None and player.get("costume_id") is None:
+            try:
+                player["costume_id"] = int(override.get("costume"))
             except (TypeError, ValueError):
                 pass
 
@@ -443,6 +449,7 @@ def persist_replay_upload(
                     port=player_data["port"],
                     type=player_data["type"],
                     character_id=player_data["character_id"],
+                    costume_id=player_data.get("costume_id"),
                     connect_code=player_data["connect_code"],
                     display_name=player_data["display_name"],
                     tag=player_data["tag"],
@@ -485,6 +492,7 @@ def persist_replay_upload(
                     port=player_data["port"],
                     type=player_data["type"],
                     character_id=player_data["character_id"],
+                    costume_id=player_data.get("costume_id"),
                     connect_code=player_data["connect_code"],
                     display_name=player_data["display_name"],
                     tag=player_data["tag"],

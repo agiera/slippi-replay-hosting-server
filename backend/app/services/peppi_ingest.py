@@ -71,6 +71,8 @@ def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
                 "port": port,
                 "type": _coerce_player_type(player.type),
                 "character_id": _coerce_int(player.character),
+                "costume_id": _coerce_int(player.costume),
+                "costume_id": _coerce_int(player.costume),
                 "connect_code": (netplay.code if netplay else None) or ctrl.get("slippi_code"),
                 "display_name": (netplay.name if netplay else None) or ctrl.get("display_name"),
                 "tag": player.name_tag or ctrl.get("tag"),

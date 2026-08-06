@@ -128,6 +128,7 @@ export async function fetchReplayFiles(params = {}) {
   if (params.date_to) search.set("date_to", params.date_to);
   if (params.keyword) search.set("keyword", params.keyword);
   if (params.character) search.set("character", params.character);
+  if (params.costume) search.set("costume", params.costume);
   if (params.ranked !== undefined && params.ranked !== null && params.ranked !== "") {
     search.set("ranked", String(params.ranked));
   }
@@ -187,6 +188,7 @@ export function normalizeStreamEventPayload(payload) {
     connect_code: connectCode,
     character_id: payload?.character_id ?? null,
     character_color: payload?.character_color ?? null,
+    costume_id: payload?.costume_id ?? null,
     port: payload?.port ?? null,
     type: payload?.type ?? null,
     is_cpu: Boolean(payload?.is_cpu),

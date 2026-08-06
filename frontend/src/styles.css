@@ -145,6 +145,7 @@ body {
     var(--main-grid-gap-from-filter) +
     var(--sidebar-sticky-nudge)
   );
+  z-index: 2;
   border-radius: 14px;
   background: rgba(18, 16, 29, 0.88);
   border: 1px solid var(--border);
@@ -401,6 +402,54 @@ body {
 .rank-picker-menu {
   min-width: 320px;
   max-width: min(560px, calc(100vw - 24px));
+}
+
+.costume-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-soft);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.costume-picker.disabled {
+  opacity: 0.55;
+  filter: grayscale(0.35);
+}
+
+.costume-picker-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.costume-picker-summary {
+  font-size: 0.8rem;
+}
+
+.costume-picker-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.costume-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.costume-chip {
+  width: 24px;
+  height: 24px;
+  padding: 1px;
+}
+
+.costume-chip img {
+  width: 20px;
+  height: 20px;
 }
 
 .char-chip:hover {

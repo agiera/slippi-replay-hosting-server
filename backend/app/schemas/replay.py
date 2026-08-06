@@ -6,6 +6,7 @@ class ReplayPlayerPublic(BaseModel):
     connect_code: str | None
     character_id: int | None
     character_color: int | None
+    costume_id: int | None
     port: int | None
     type: int | None = None
     is_cpu: bool = False

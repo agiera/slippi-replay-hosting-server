@@ -1014,6 +1014,9 @@ def _set_source_player_preview(
         character_id = player.get("character_id")
         if character_id is None:
             character_id = player.get("character")
+        costume_id = player.get("costume_id")
+        if costume_id is None:
+            costume_id = player.get("costume")
         player_type = player.get("type")
         is_cpu = player.get("is_cpu")
         if is_cpu is None and player_type is not None:
@@ -1029,6 +1032,7 @@ def _set_source_player_preview(
             "slippi_code": slippi_code,
             "firmware": firmware,
             "character_id": character_id,
+            "costume_id": costume_id,
             "type": player_type,
             "is_cpu": is_cpu,
         }
@@ -1056,6 +1060,7 @@ def _set_source_player_preview(
         "slippi_code",
         "firmware",
         "character_id",
+        "costume_id",
         "type",
         "is_cpu",
     )

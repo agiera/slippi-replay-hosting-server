@@ -341,6 +341,37 @@ def test_public_files_keyword_and_multi_character_filters_are_game_wide(client, 
     assert character_names == {"both.slp"}
 
 
+def test_public_files_costume_filter_matches_character_specific_costumes(client, db_session):
+    file_match = File(folder="ranked/set_costumes", name="match.slp", size_bytes=100, birth_time="2024-04-01")
+    file_wrong_marth = File(folder="ranked/set_costumes", name="wrong-marth.slp", size_bytes=100, birth_time="2024-04-01")
+    file_wrong_pika = File(folder="ranked/set_costumes", name="wrong-pika.slp", size_bytes=100, birth_time="2024-04-01")
+    db_session.add_all([file_match, file_wrong_marth, file_wrong_pika])
+    db_session.flush()
+
+    game_match = Game(file_id=file_match._id, is_ranked=1, is_teams=0, start_time="2024-04-01T12:00:00Z")
+    game_wrong_marth = Game(file_id=file_wrong_marth._id, is_ranked=1, is_teams=0, start_time="2024-04-01T12:05:00Z")
+    game_wrong_pika = Game(file_id=file_wrong_pika._id, is_ranked=1, is_teams=0, start_time="2024-04-01T12:10:00Z")
+    db_session.add_all([game_match, game_wrong_marth, game_wrong_pika])
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            Player(game_id=game_match._id, port=1, character_id=9, costume_id=0, display_name="MarthA"),
+            Player(game_id=game_match._id, port=2, character_id=13, costume_id=1, display_name="PikaA"),
+            Player(game_id=game_wrong_marth._id, port=1, character_id=9, costume_id=2, display_name="MarthB"),
+            Player(game_id=game_wrong_marth._id, port=2, character_id=13, costume_id=1, display_name="PikaB"),
+            Player(game_id=game_wrong_pika._id, port=1, character_id=9, costume_id=0, display_name="MarthC"),
+            Player(game_id=game_wrong_pika._id, port=2, character_id=13, costume_id=2, display_name="PikaC"),
+        ]
+    )
+    db_session.commit()
+
+    res = client.get("/api/v1/replays/files", params={"costume": "9:0,13:1"})
+    assert res.status_code == 200
+    names = {item["name"] for item in res.json()["items"]}
+    assert names == {"match.slp"}
+
+
 def test_public_files_rank_filter_supports_single_or_two_rank_assignments(client, db_session, monkeypatch):
     file_match = File(folder="ranked/set4", name="match.slp", size_bytes=100, birth_time="2024-05-01")
     file_mismatch = File(folder="ranked/set4", name="mismatch.slp", size_bytes=100, birth_time="2024-05-01")

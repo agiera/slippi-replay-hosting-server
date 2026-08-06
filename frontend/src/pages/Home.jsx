@@ -63,8 +63,6 @@ const CHARACTER_LIST = [
   { id: 23, name: "Roy" },
   { id: 24, name: "Pichu" },
   { id: 25, name: "Ganondorf" },
-  { id: 31, name: "Master Hand" },
-  { id: 32, name: "Wireframe M" },
 ];
 
 const STAGE_NAME_BY_ID = {
@@ -103,6 +101,7 @@ const STAGE_NAME_BY_ID = {
 const INITIAL_FILTERS = {
   keyword: "",
   character: "",
+  costume: "",
   ranked: "",
   rank: "",
   min_rank: "",
@@ -140,6 +139,105 @@ const RANK_FILTER_LIST = [
   "Master_III",
   "Grand_Master",
 ];
+
+const CHARACTER_BY_ID = new Map(CHARACTER_LIST.map((character) => [character.id, character]));
+
+const COSTUME_IDS_BY_CHARACTER = (() => {
+  const map = new Map();
+  const pathPattern = /\.\.\/assets\/images\/characters\/(\d+)\/(\d+)\/stock\.png$/;
+
+  Object.keys(CHARACTER_STOCK_IMAGES).forEach((assetPath) => {
+    const match = pathPattern.exec(assetPath);
+    if (!match) {
+      return;
+    }
+
+    const characterId = Number(match[1]);
+    const costumeId = Number(match[2]);
+    if (!Number.isInteger(characterId) || !Number.isInteger(costumeId)) {
+      return;
+    }
+
+    if (!map.has(characterId)) {
+      map.set(characterId, new Set());
+    }
+    map.get(characterId).add(costumeId);
+  });
+
+  map.forEach((costumeIds, characterId) => {
+    const sorted = Array.from(costumeIds).sort((a, b) => a - b);
+    map.set(characterId, sorted);
+  });
+
+  return map;
+})();
+
+function parseSelectedCharacterIds(value) {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => Number(part))
+    .filter((id) => Number.isInteger(id) && CHARACTER_BY_ID.has(id));
+}
+
+function parseCostumeSelection(value) {
+  const selections = new Map();
+  if (!value) {
+    return selections;
+  }
+
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((pair) => {
+      const [characterRaw, costumeRaw] = pair.split(":");
+      const characterId = Number(characterRaw);
+      const costumeId = Number(costumeRaw);
+      if (!Number.isInteger(characterId) || !Number.isInteger(costumeId)) {
+        return;
+      }
+      if (!selections.has(characterId)) {
+        selections.set(characterId, new Set());
+      }
+      selections.get(characterId).add(costumeId);
+    });
+
+  return selections;
+}
+
+function serializeCostumeSelection(selections) {
+  const pairs = [];
+  Array.from(selections.keys())
+    .sort((a, b) => a - b)
+    .forEach((characterId) => {
+      const costumeIds = Array.from(selections.get(characterId) || []).sort((a, b) => a - b);
+      costumeIds.forEach((costumeId) => {
+        pairs.push(`${characterId}:${costumeId}`);
+      });
+    });
+  return pairs.join(",");
+}
+
+function pruneCostumeSelection(costumeValue, selectedCharacterIds) {
+  const selectedSet = new Set(selectedCharacterIds);
+  const selections = parseCostumeSelection(costumeValue);
+  const pruned = new Map();
+
+  selections.forEach((costumeIds, characterId) => {
+    if (!selectedSet.has(characterId)) {
+      return;
+    }
+    const available = new Set(COSTUME_IDS_BY_CHARACTER.get(characterId) || [0]);
+    const validCostumes = Array.from(costumeIds).filter((costumeId) => available.has(costumeId));
+    if (validCostumes.length > 0) {
+      pruned.set(characterId, new Set(validCostumes));
+    }
+  });
+
+  return serializeCostumeSelection(pruned);
+}
 
 const SLIPPILAB_URL = (() => {
   const configured = String(import.meta.env.VITE_SLIPPILAB_URL || "").trim();
@@ -323,7 +421,7 @@ function CharacterPicker({ selected, onChange }) {
             })}
           </div>
         ) : null}
-        <span>{selectedChars.length > 0 ? `${selectedChars.length} selected` : "Character"}</span>
+        <span>{selectedChars.length === 0 ? "Character" : ""}</span>
         {selectedChars.length > 0 ? (
           <button
             type="button"
@@ -391,7 +489,7 @@ function RankPicker({ selected, onChange }) {
             })}
           </div>
         ) : null}
-        <span>{selectedValues.length > 0 ? `${selectedValues.length} selected` : "Rank"}</span>
+        <span>Rank</span>
         {selectedValues.length > 0 ? (
           <button
             type="button"
@@ -427,10 +525,72 @@ function RankPicker({ selected, onChange }) {
   );
 }
 
+function CostumePicker({ selectedCharacters, selectedCostumes, onChange }) {
+  const disabled = selectedCharacters.length === 0;
+  const selections = parseCostumeSelection(selectedCostumes);
+
+  function toggleCostume(characterId, costumeId) {
+    const nextSelections = parseCostumeSelection(selectedCostumes);
+    if (!nextSelections.has(characterId)) {
+      nextSelections.set(characterId, new Set());
+    }
+
+    const characterSelections = nextSelections.get(characterId);
+    if (characterSelections.has(costumeId)) {
+      characterSelections.delete(costumeId);
+    } else {
+      characterSelections.add(costumeId);
+    }
+
+    if (characterSelections.size === 0) {
+      nextSelections.delete(characterId);
+    }
+
+    onChange(serializeCostumeSelection(nextSelections));
+  }
+
+  return (
+    <div className={`costume-picker${disabled ? " disabled" : ""}`}>
+      <div className="costume-picker-label">
+        <span>Costume</span>
+        <span className="costume-picker-summary" />
+      </div>
+      {disabled ? null : (
+        <div className="costume-picker-rows">
+          {selectedCharacters.map((characterId) => {
+            const costumeIds = COSTUME_IDS_BY_CHARACTER.get(characterId) || [0];
+            const activeCostumes = selections.get(characterId) || new Set();
+            return (
+              <div key={characterId} className="costume-row">
+                {costumeIds.map((costumeId) => {
+                  const icon = getCharacterStock(characterId, costumeId);
+                  const active = activeCostumes.has(costumeId);
+                  return (
+                    <button
+                      key={`${characterId}-${costumeId}`}
+                      type="button"
+                      className={`char-chip costume-chip${active ? " active" : ""}`}
+                      onClick={() => toggleCostume(characterId, costumeId)}
+                      title={`Character ${characterId} Costume ${costumeId}`}
+                    >
+                      {icon ? <img src={icon} alt={`Character ${characterId} costume ${costumeId}`} /> : <span>{costumeId}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function parseFiltersFromSearch(searchParams) {
   return {
     keyword: searchParams.get("keyword") || "",
     character: searchParams.get("character") || "",
+    costume: searchParams.get("costume") || "",
     ranked: searchParams.get("ranked") || "",
     rank: searchParams.get("rank") || "",
     min_rank: searchParams.get("min_rank") || "",
@@ -536,12 +696,12 @@ function getStageRowStyle(stageId) {
   };
 }
 
-function getCharacterStock(characterId, color = 0) {
+function getCharacterStock(characterId, costumeId = 0) {
   if (characterId === null || characterId === undefined) {
     return "";
   }
 
-  const normalizedColor = Number.isInteger(Number(color)) ? Number(color) : 0;
+  const normalizedColor = Number.isInteger(Number(costumeId)) ? Number(costumeId) : 0;
   const directPath = `../assets/images/characters/${characterId}/${normalizedColor}/stock.png`;
   if (CHARACTER_STOCK_IMAGES[directPath]) {
     return CHARACTER_STOCK_IMAGES[directPath];
@@ -575,7 +735,7 @@ function renderPlayerCell(player) {
 
   const info = player;
   const port = info.port ?? null;
-  const characterImage = getCharacterStock(info.character_id, info.character_color);
+  const characterImage = getCharacterStock(info.character_id, info.costume_id ?? info.character_color);
   const rankImage = getRankImage(info.rank);
   const rating = info.rating ?? "--";
   const displayName = info.name || info.display_name || info.tag || info.connect_code || "-";
@@ -672,6 +832,10 @@ export default function Home() {
     const maxPlayers = tableRows.reduce((maxCount, row) => Math.max(maxCount, getRowPlayers(row).length), 0);
     return Math.min(4, Math.max(2, maxPlayers));
   }, [tableRows]);
+
+  const selectedCharacterIds = useMemo(() => {
+    return parseSelectedCharacterIds(filters.character);
+  }, [filters.character]);
 
   useEffect(() => {
     const nextFilters = parseFiltersFromSearch(searchParams);
@@ -895,6 +1059,15 @@ export default function Home() {
     setFilters((prev) => ({ ...prev, [name]: value }));
   }
 
+  function onCharacterFilterChange(nextCharacterValue) {
+    const nextCharacterIds = parseSelectedCharacterIds(nextCharacterValue);
+    setFilters((prev) => ({
+      ...prev,
+      character: nextCharacterValue,
+      costume: pruneCostumeSelection(prev.costume, nextCharacterIds),
+    }));
+  }
+
   function onResetFilters() {
     setFilters(INITIAL_FILTERS);
   }
@@ -974,7 +1147,12 @@ export default function Home() {
             <input name="keyword" placeholder="Keyword" value={filters.keyword} onChange={onFilterChange} />
             <CharacterPicker
               selected={filters.character}
-              onChange={(val) => setFilters((prev) => ({ ...prev, character: val }))}
+              onChange={onCharacterFilterChange}
+            />
+            <CostumePicker
+              selectedCharacters={selectedCharacterIds}
+              selectedCostumes={filters.costume}
+              onChange={(value) => setFilters((prev) => ({ ...prev, costume: value }))}
             />
             <RankPicker
               selected={filters.rank}

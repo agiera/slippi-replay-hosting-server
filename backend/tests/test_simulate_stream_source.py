@@ -5,7 +5,13 @@ from pathlib import Path
 
 
 def _load_simulator_module():
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "simulate_stream_source.py"
+    base = Path(__file__).resolve()
+    candidates = [
+        base.parents[1] / "scripts" / "simulate_stream_source.py",
+        base.parents[2] / "scripts" / "simulate_stream_source.py",
+    ]
+    script_path = next((path for path in candidates if path.is_file()), None)
+    assert script_path is not None, "simulate_stream_source.py not found in expected locations"
     spec = importlib.util.spec_from_file_location("simulate_stream_source", script_path)
     assert spec is not None
     assert spec.loader is not None

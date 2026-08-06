@@ -96,6 +96,24 @@ def _parse_csv_values(value: str | None) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def _parse_costume_filter_pairs(value: str | None) -> dict[int, set[int]]:
+    pairs: dict[int, set[int]] = {}
+    for token in _parse_csv_values(value):
+        if ":" not in token:
+            continue
+        character_raw, costume_raw = token.split(":", 1)
+        try:
+            character_id = int(character_raw.strip())
+            costume_id = int(costume_raw.strip())
+        except ValueError:
+            continue
+
+        if character_id not in pairs:
+            pairs[character_id] = set()
+        pairs[character_id].add(costume_id)
+    return pairs
+
+
 def _extract_repo_collection(folder: str | None) -> tuple[str | None, str | None]:
     if not folder:
         return None, None
@@ -256,6 +274,7 @@ def list_files(
     date_to: str | None = Query(None),
     keyword: str | None = Query(None),
     character: str | None = Query(None),
+    costume: str | None = Query(None),
     ranked: int | None = Query(None, ge=0, le=1),
     player: str | None = Query(None),
     rank: str | None = Query(None),
@@ -344,6 +363,26 @@ def list_files(
                         )
                     )
                 )
+
+    costume_pairs = _parse_costume_filter_pairs(costume)
+    if costume_pairs:
+        for character_id, costume_ids in costume_pairs.items():
+            if not costume_ids:
+                continue
+            player_for_costume = aliased(Player)
+            conditions.append(
+                exists(
+                    select(player_for_costume._id)
+                    .select_from(player_for_costume)
+                    .where(
+                        and_(
+                            player_for_costume.game_id == Game._id,
+                            player_for_costume.character_id == character_id,
+                            player_for_costume.costume_id.in_(costume_ids),
+                        )
+                    )
+                )
+            )
 
     if ranked is not None:
         conditions.append(Game.is_ranked == ranked)
@@ -450,6 +489,7 @@ def list_files(
             func.coalesce(player_two.display_name, player_two.tag, player_two.connect_code).label("player_2"),
             player_one.character_id.label("player_1_character_id"),
             player_one.character_color.label("player_1_character_color"),
+            player_one.costume_id.label("player_1_costume_id"),
             player_one.port.label("player_1_port"),
             player_one.type.label("player_1_type"),
             player_one.connect_code.label("player_1_connect_code"),
@@ -458,6 +498,7 @@ def list_files(
             player_one.rating.label("player_1_rating"),
             player_two.character_id.label("player_2_character_id"),
             player_two.character_color.label("player_2_character_color"),
+            player_two.costume_id.label("player_2_costume_id"),
             player_two.port.label("player_2_port"),
             player_two.type.label("player_2_type"),
             player_two.connect_code.label("player_2_connect_code"),
@@ -508,6 +549,7 @@ def list_files(
                 Player.type.label("type"),
                 Player.character_id.label("character_id"),
                 Player.character_color.label("character_color"),
+                Player.costume_id.label("costume_id"),
                 Player.display_name.label("display_name"),
                 Player.tag.label("tag"),
                 Player.connect_code.label("connect_code"),
@@ -676,6 +718,7 @@ def list_files(
                     connect_code=player_row.connect_code,
                     character_id=player_row.character_id,
                     character_color=player_row.character_color,
+                    costume_id=player_row.costume_id,
                     port=player_row.port,
                     type=player_row.type,
                     is_cpu=player_row.type == 1,
@@ -712,6 +755,7 @@ def list_files(
                     connect_code=row.player_1_connect_code,
                     character_id=row.player_1_character_id,
                     character_color=row.player_1_character_color,
+                    costume_id=row.player_1_costume_id,
                     port=row.player_1_port,
                     type=row.player_1_type,
                     is_cpu=row.player_1_type == 1,
@@ -724,6 +768,7 @@ def list_files(
                     connect_code=row.player_2_connect_code,
                     character_id=row.player_2_character_id,
                     character_color=row.player_2_character_color,
+                    costume_id=row.player_2_costume_id,
                     port=row.player_2_port,
                     type=row.player_2_type,
                     is_cpu=row.player_2_type == 1,
@@ -991,6 +1036,7 @@ def get_stream_status(
                     "connect_code": slippi_code,
                     "character_id": preview.get("character_id"),
                     "character_color": None,
+                    "costume_id": None,
                     "port": preview.get("port"),
                     "type": preview.get("type"),
                     "is_cpu": bool(preview.get("is_cpu")),
