@@ -822,8 +822,22 @@ _server_thread: threading.Thread | None = None
 
 _stream_state_lock = threading.Lock()
 _source_connections: dict[str, dict] = {}
+_source_connection_index: dict[str, str] = {}
 _recent_events: deque[dict] = deque(maxlen=500)
 _stream_event_sequence: int = 0
+
+
+def _latest_source_connection_id(source_name: str) -> str | None:
+    with _stream_state_lock:
+        return _source_connection_index.get(source_name)
+
+
+def _get_latest_source_connection(source_name: str) -> dict | None:
+    connection_id = _latest_source_connection_id(source_name)
+    if connection_id is None:
+        return None
+    with _stream_state_lock:
+        return _source_connections.get(connection_id)
 
 
 def _is_parsed_slippi_filename(filename: str | None) -> bool:
@@ -834,14 +848,20 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
     with _stream_state_lock:
         if connected:
             existing_last_completed_at = None
-            if source_name in _source_connections:
-                existing_last_completed_at = _source_connections[source_name].get("last_completed_at")
+            previous_connection_id = _source_connection_index.get(source_name)
+            if previous_connection_id is not None:
+                previous = _source_connections.get(previous_connection_id)
+                if previous is not None:
+                    previous["connected"] = False
+                    previous["updated_at"] = datetime.now(timezone.utc)
+                    existing_last_completed_at = previous.get("last_completed_at")
+
             now = datetime.now(timezone.utc)
             upload_session_id = str(uuid.uuid4())
             stream_game_id = str(uuid.uuid4())
             # A new connection represents a new game upload; start the live preview
             # fresh so stale ports from a previous game do not linger and merge.
-            _source_connections[source_name] = {
+            _source_connections[upload_session_id] = {
                 "source_name": source_name,
                 "username": username,
                 "upload_session_id": upload_session_id,
@@ -860,25 +880,40 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 "active_staged_path": None,
                 "active_upload_started_at": None,
             }
+            _source_connection_index[source_name] = upload_session_id
         else:
-            if source_name in _source_connections:
-                _source_connections[source_name]["connected"] = False
-                _source_connections[source_name]["updated_at"] = datetime.now(timezone.utc)
+            connection_id = _source_connection_index.get(source_name)
+            if connection_id is None:
+                return
+            row = _source_connections.get(connection_id)
+            if row is None:
+                _source_connection_index.pop(source_name, None)
+                return
+            row["connected"] = False
+            row["updated_at"] = datetime.now(timezone.utc)
+            _source_connection_index.pop(source_name, None)
 
 
 def _set_source_active_staged_file(source_name: str, staged_path: str | None) -> None:
     with _stream_state_lock:
-        if source_name not in _source_connections:
+        connection_id = _source_connection_index.get(source_name)
+        if connection_id is None:
             return
-        _source_connections[source_name]["active_staged_path"] = staged_path
-        _source_connections[source_name]["active_upload_started_at"] = (
+        row = _source_connections.get(connection_id)
+        if row is None:
+            return
+        row["active_staged_path"] = staged_path
+        row["active_upload_started_at"] = (
             datetime.now(timezone.utc) if staged_path else None
         )
 
 
 def get_source_live_replay_path(source_name: str) -> Path | None:
     with _stream_state_lock:
-        row = _source_connections.get(source_name)
+        connection_id = _source_connection_index.get(source_name)
+        if connection_id is None:
+            return None
+        row = _source_connections.get(connection_id)
         if not row:
             return None
         value = row.get("active_staged_path")
@@ -1076,10 +1111,13 @@ def _set_source_player_preview(
             return None
 
     with _stream_state_lock:
-        if source_name not in _source_connections:
+        connection_id = _source_connection_index.get(source_name)
+        if connection_id is None:
             return
 
-        conn = _source_connections[source_name]
+        conn = _source_connections.get(connection_id)
+        if conn is None:
+            return
 
         existing_preview = conn.get("player_preview") or []
         existing_by_port: dict[int | None, dict] = {}
@@ -1253,7 +1291,10 @@ def _refresh_source_metadata_from_file(db, *, file_id: int, existing_payload: di
 
 def _session_started_without_completion(source_name: str) -> bool:
     with _stream_state_lock:
-        source_row = _source_connections.get(source_name)
+        connection_id = _source_connection_index.get(source_name)
+        if connection_id is None:
+            return False
+        source_row = _source_connections.get(connection_id)
         if source_row is None:
             return False
 
@@ -1270,7 +1311,8 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
 
     event_time = datetime.now(timezone.utc)
     with _stream_state_lock:
-        source_row = _source_connections.get(source_name)
+        connection_id = _source_connection_index.get(source_name)
+        source_row = _source_connections.get(connection_id) if connection_id is not None else None
         upload_session_id = source_row.get("upload_session_id") if source_row else None
         stream_game_id = source_row.get("stream_game_id") if source_row else None
 
@@ -1289,12 +1331,12 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
             }
         )
 
-        if source_name in _source_connections:
-            _source_connections[source_name]["updated_at"] = event_time
-            _source_connections[source_name]["last_activity_at"] = event_time
-            _source_connections[source_name]["stream_phase"] = status
+        if source_row is not None:
+            source_row["updated_at"] = event_time
+            source_row["last_activity_at"] = event_time
+            source_row["stream_phase"] = status
             if status in {"completed", "ended"}:
-                _source_connections[source_name]["last_completed_at"] = event_time
+                source_row["last_completed_at"] = event_time
 
     print(
         "[FTP][EVENT] "
