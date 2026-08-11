@@ -412,7 +412,14 @@ class ReplayFTPHandler(FTPHandler):
         repository_name = self.ftp_session.repository_name
         if stream_game_id is None or upload_started_at is None:
             with _stream_state_lock:
-                source_state = _source_connections.get(self.ftp_session.source_name, {})
+                source_state = {}
+                connection_id = self.ftp_session.upload_session_id
+                if connection_id is not None:
+                    source_state = _source_connections.get(connection_id, {})
+                if not source_state:
+                    fallback_connection_id = _source_connection_index.get(self.ftp_session.source_name)
+                    if fallback_connection_id is not None:
+                        source_state = _source_connections.get(fallback_connection_id, {})
                 if stream_game_id is None:
                     stream_game_id = source_state.get("stream_game_id")
                 if upload_started_at is None:
