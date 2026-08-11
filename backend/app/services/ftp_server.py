@@ -84,6 +84,7 @@ class FTPSessionContext:
     repositories: set[str]
     repository_name: str
     session_home: str
+    upload_session_id: str | None = None
 
 
 class SourceTokenAuthorizer(DummyAuthorizer):
@@ -143,9 +144,12 @@ class ReplayFTPHandler(FTPHandler):
     def _trace_scope(self) -> str:
         if self.ftp_session is None:
             return "source='-' upload_session_id='-'"
-        with _stream_state_lock:
-            source_state = _source_connections.get(self.ftp_session.source_name, {})
-            upload_session_id = source_state.get("upload_session_id")
+        upload_session_id = self.ftp_session.upload_session_id
+        if upload_session_id is None:
+            with _stream_state_lock:
+                connection_id = _source_connection_index.get(self.ftp_session.source_name)
+                source_state = _source_connections.get(connection_id, {}) if connection_id else {}
+                upload_session_id = source_state.get("upload_session_id")
         return (
             f"source='{self.ftp_session.source_name}' "
             f"upload_session_id='{upload_session_id}'"
@@ -179,7 +183,12 @@ class ReplayFTPHandler(FTPHandler):
         self._session_seen_stor_file_keys = set()
         self._session_upload_context_by_file_key = {}
         self._pending_metadata_by_replay_name = {}
-        _set_source_connection_state(context.source_name, context.username, context.repositories, connected=True)
+        self.ftp_session.upload_session_id = _set_source_connection_state(
+            context.source_name,
+            context.username,
+            context.repositories,
+            connected=True,
+        )
         print(
             f"[FTP][TRACE] Login {self._trace_scope()} user='{context.username}' repos={sorted(context.repositories)} session_home='{context.session_home}'",
             flush=True,
@@ -235,7 +244,7 @@ class ReplayFTPHandler(FTPHandler):
             _set_source_active_staged_file(self.ftp_session.source_name, str(file))
             if stor_file_key:
                 with _stream_state_lock:
-                    source_state = _source_connections.get(self.ftp_session.source_name, {})
+                    source_state = _source_connections.get(self.ftp_session.upload_session_id or _source_connection_index.get(self.ftp_session.source_name), {})
                     self._session_upload_context_by_file_key[stor_file_key] = (
                         source_state.get("stream_game_id"),
                         source_state.get("active_upload_started_at"),
@@ -339,6 +348,12 @@ class ReplayFTPHandler(FTPHandler):
                     file_key,
                     (None, None),
                 )
+            if stream_game_id is None and self.ftp_session.upload_session_id is not None:
+                with _stream_state_lock:
+                    source_state = _source_connections.get(self.ftp_session.upload_session_id)
+                    if source_state is not None:
+                        stream_game_id = source_state.get("stream_game_id")
+                        upload_started_at = source_state.get("active_upload_started_at")
             print(
                 f"[FTP][TRACE] Finalizing file='{original_name}' {self._trace_upload_scope(file_key=file_key, stream_game_id=stream_game_id)} captured_upload_started_at='{upload_started_at}'",
                 flush=True,
@@ -844,7 +859,7 @@ def _is_parsed_slippi_filename(filename: str | None) -> bool:
     return str(filename or "").lower().endswith(".peppi.json.gz")
 
 
-def _set_source_connection_state(source_name: str, username: str, repositories: set[str], connected: bool) -> None:
+def _set_source_connection_state(source_name: str, username: str, repositories: set[str], connected: bool) -> str | None:
     with _stream_state_lock:
         if connected:
             existing_last_completed_at = None
@@ -881,17 +896,19 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 "active_upload_started_at": None,
             }
             _source_connection_index[source_name] = upload_session_id
-        else:
-            connection_id = _source_connection_index.get(source_name)
-            if connection_id is None:
-                return
-            row = _source_connections.get(connection_id)
-            if row is None:
-                _source_connection_index.pop(source_name, None)
-                return
-            row["connected"] = False
-            row["updated_at"] = datetime.now(timezone.utc)
+            return upload_session_id
+
+        connection_id = _source_connection_index.get(source_name)
+        if connection_id is None:
+            return None
+        row = _source_connections.get(connection_id)
+        if row is None:
             _source_connection_index.pop(source_name, None)
+            return None
+        row["connected"] = False
+        row["updated_at"] = datetime.now(timezone.utc)
+        _source_connection_index.pop(source_name, None)
+        return row.get("upload_session_id")
 
 
 def _set_source_active_staged_file(source_name: str, staged_path: str | None) -> None:
