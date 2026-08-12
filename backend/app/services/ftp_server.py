@@ -112,14 +112,15 @@ class SourceTokenAuthorizer(DummyAuthorizer):
         )
 
         with self._lock:
-            # Multiple Wiis can share the same login username (for example, a single
-            # source token reused across sequential or concurrent uploads). Replacing
-            # the existing user entry on every login collapses prior sessions and can
-            # race with active uploads. Keep the shared authorizer entry and scope
-            # state to the handler instance instead.
-            if not self.has_user(username):
-                # Store a non-secret placeholder password because credentials are validated above.
-                self.add_user(username, "ftp-session", session_home, perm="elradfmwMT")
+            # Multiple Wiis can share the same login username, but the FTP home must
+            # belong to the active connection rather than the stale first session.
+            # Replacing the username entry on each successful login keeps the current
+            # session home accurate and prevents older transfers from continuing to
+            # write into a previous session directory.
+            if self.has_user(username):
+                self.remove_user(username)
+            # Store a non-secret placeholder password because credentials are validated above.
+            self.add_user(username, "ftp-session", session_home, perm="elradfmwMT")
             self._contexts[id(handler)] = context
 
     def pop_context(self, handler) -> FTPSessionContext | None:

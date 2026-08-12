@@ -10,6 +10,8 @@ from app.models.repository import Repository
 from app.models.source_metadata import SourceMetadata
 from app.models.user import User
 from app.services.ftp_server import (
+    FTPSessionContext,
+    SourceTokenAuthorizer,
     _record_stream_event,
     _prepare_session_home,
     _set_source_connection_state,
@@ -117,6 +119,40 @@ def test_ftp_auth_rejects_wrong_token_or_role(db_session, testing_session_local)
 
     with pytest.raises(AuthenticationFailed):
         _authenticate_ftp_credentials("notuploader", "wrong-token", session_factory=testing_session_local)
+
+
+def test_source_token_authorizer_replaces_home_for_reused_username(monkeypatch):
+    authorizer = SourceTokenAuthorizer()
+
+    first_context = FTPSessionContext(
+        user_id=1,
+        token_id=10,
+        username="agiera",
+        source_name="NGPR-WII-07",
+        repositories={"New Game Plus Revival"},
+        repository_name="New Game Plus Revival",
+        session_home="/tmp/old-session-home",
+    )
+    second_context = FTPSessionContext(
+        user_id=1,
+        token_id=11,
+        username="agiera",
+        source_name="NGPR-WII-07",
+        repositories={"New Game Plus Revival"},
+        repository_name="New Game Plus Revival",
+        session_home="/tmp/new-session-home",
+    )
+
+    calls = iter([first_context, second_context])
+    monkeypatch.setattr(
+        "app.services.ftp_server._authenticate_ftp_credentials",
+        lambda username, password, handler=None, session_factory=None: next(calls),
+    )
+
+    authorizer.validate_authentication("agiera", "token-1", handler=None)
+    authorizer.validate_authentication("agiera", "token-2", handler=None)
+
+    assert authorizer.get_home("agiera") == "/tmp/new-session-home"
 
 
 def _encode_len_prefixed_ascii(value: str) -> bytes:
