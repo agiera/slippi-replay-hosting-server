@@ -814,8 +814,14 @@ export default function Home() {
   const [streamError, setStreamError] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
   const [preservedTerminalRows, setPreservedTerminalRows] = useState([]);
+  // Source the user asked Slippi to keep mirroring. When a newer game from this
+  // source starts (seen via SSE), we re-fire the mirror deep link automatically.
+  const [autoFollowSource, setAutoFollowSource] = useState("");
   const sentinelRef = useRef(null);
   const latestCompletedEventMsRef = useRef(0);
+  // Read inside the long-lived SSE handler, so keep the latest values in refs.
+  const autoFollowSourceRef = useRef("");
+  const lastMirroredStreamGameIdRef = useRef("");
 
   const tableRows = useMemo(
     () => mergeReplayRows({
@@ -965,6 +971,24 @@ export default function Home() {
         try {
           const payload = JSON.parse(event.data || "{}");
           setStreamStatus((prev) => applyStreamEventFrame(prev, payload));
+          const eventStatus = String(payload?.status || "").toLowerCase();
+          const eventSource = String(payload?.source_name || "").trim();
+          const eventStreamGameId = String(payload?.stream_game_id || "").trim();
+          // Auto-advance Slippi mirror: when a newer game from the source we're
+          // following starts, re-fire the mirror deep link so Dolphin picks it up.
+          if (
+            eventStatus === "started" &&
+            autoFollowSourceRef.current &&
+            eventSource === autoFollowSourceRef.current &&
+            eventStreamGameId &&
+            eventStreamGameId !== lastMirroredStreamGameIdRef.current
+          ) {
+            const mirrorLink = buildSlippiMirrorDeepLink(eventSource);
+            if (mirrorLink) {
+              lastMirroredStreamGameIdRef.current = eventStreamGameId;
+              window.location.href = mirrorLink;
+            }
+          }
           const terminalStatus = ["ended", "completed", "abandoned", "incomplete", "failed"].includes(
             String(payload?.status || "").toLowerCase()
           );
@@ -1101,7 +1125,7 @@ export default function Home() {
     window.location.href = slippiLink;
   }
 
-  function streamInSlippi(sourceName) {
+  function streamInSlippi(sourceName, streamGameId) {
     const normalizedSource = (sourceName || "").trim();
     if (!normalizedSource) {
       return;
@@ -1112,8 +1136,19 @@ export default function Home() {
       setStreamError(`No replay available yet for source ${normalizedSource}.`);
       return;
     }
+    // Remember which game we're launching so the SSE handler only auto-advances
+    // when a *newer* game from this same source begins.
+    lastMirroredStreamGameIdRef.current = String(streamGameId || "").trim();
+    autoFollowSourceRef.current = normalizedSource;
+    setAutoFollowSource(normalizedSource);
     setStreamError("");
     window.location.href = slippiLink;
+  }
+
+  function stopAutoFollow() {
+    autoFollowSourceRef.current = "";
+    lastMirroredStreamGameIdRef.current = "";
+    setAutoFollowSource("");
   }
 
   return (
@@ -1288,10 +1323,21 @@ export default function Home() {
                             <button
                               type="button"
                               className="viewer-row-btn viewer-row-btn-secondary"
-                              onClick={() => streamInSlippi(row.source_name)}
+                              onClick={() => streamInSlippi(row.source_name, row.stream_game_id)}
                             >
-                              Stream in Slippi
+                              {autoFollowSource && autoFollowSource === row.source_name
+                                ? "Following in Slippi"
+                                : "Stream in Slippi"}
                             </button>
+                            {autoFollowSource && autoFollowSource === row.source_name ? (
+                              <button
+                                type="button"
+                                className="viewer-row-btn viewer-row-btn-secondary"
+                                onClick={stopAutoFollow}
+                              >
+                                Stop
+                              </button>
+                            ) : null}
                           </>
                         ) : row.lifecycle === "finalizing" ? (
                           <>
