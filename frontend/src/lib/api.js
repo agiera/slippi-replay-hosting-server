@@ -158,6 +158,56 @@ export async function fetchReplayFilterOptions() {
   return res.json();
 }
 
+export async function createRenderJob(fileId) {
+  const res = await fetch(`${API_BASE}/renders/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function getRenderJob(jobId) {
+  const res = await fetch(`${API_BASE}/renders/jobs/${jobId}`);
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export async function getRenderJobForFile(fileId) {
+  const res = await fetch(`${API_BASE}/renders/jobs/by-file/${fileId}`);
+  if (!res.ok) {
+    throw new Error(await extractError(res));
+  }
+  return res.json();
+}
+
+export function buildRenderVodUrl(jobId) {
+  return `${API_BASE}/renders/jobs/${jobId}/download`;
+}
+
+export function openRenderJobEvents(jobId, onUpdate) {
+  const rawUrl = `${API_BASE}/renders/jobs/${jobId}/events`;
+  const url = new URL(rawUrl, window.location.origin).toString();
+  const eventSource = new EventSource(url);
+
+  if (typeof onUpdate === "function") {
+    eventSource.addEventListener("render_job", (event) => {
+      try {
+        onUpdate(JSON.parse(event.data));
+      } catch {
+        // Ignore malformed frames; the stream keeps flowing.
+      }
+    });
+  }
+
+  return eventSource;
+}
+
 export async function listStreamTournaments() {
   const res = await fetch(`${API_BASE}/replays/stream/tournaments`);
   if (!res.ok) {

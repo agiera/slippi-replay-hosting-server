@@ -571,6 +571,18 @@ def list_files(
     repo_names = {repo for repo, _ in repo_source_pairs if repo}
     source_names = {source for _, source in repo_source_pairs if source}
 
+    public_repo_names = (
+        set(
+            db.scalars(
+                select(Repository.name).where(
+                    Repository.name.in_(repo_names), Repository.is_public.is_(True)
+                )
+            ).all()
+        )
+        if repo_names
+        else set()
+    )
+
     resolved_tournament_by_repo_source: dict[tuple[str, str], str] = {}
     resolved_tournament_by_repo: dict[str, str] = {}
     if repo_names:
@@ -675,6 +687,7 @@ def list_files(
                     name="",
                     stream_game_id=None,
                     resolved_tournament_name=None,
+                    repository_is_public=False,
                     size_bytes=0,
                     birth_time=None,
                     player_1=None,
@@ -746,6 +759,7 @@ def list_files(
                 stream_game_id=row.stream_game_id,
                 source_name=source_name,
                 resolved_tournament_name=resolved_tournament_name,
+                repository_is_public=bool(repository_name and repository_name in public_repo_names),
                 size_bytes=row.size_bytes,
                 birth_time=row.birth_time,
                 player_1=row.player_1,

@@ -22,6 +22,7 @@ class ReplayFilePublic(BaseModel):
     stream_game_id: str | None = None
     source_name: str | None = None
     resolved_tournament_name: str | None = None
+    repository_is_public: bool = False
     size_bytes: int
     birth_time: str | None
     player_1: str | None

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     START_GG_TOKEN: str = ""
     PARRY_GG_TOKEN: str = ""
     REPLAY_STORAGE_DIR: str = "/app/uploads"
+    RENDER_STORAGE_DIR: str = "/app/renders"
+    RENDER_OUTPUT_TTL_SECONDS: int = 2592000  # 30 days; refreshed each time a VOD is viewed
+    RENDER_OUTPUT_PRUNE_INTERVAL_SECONDS: int = 600
     REPLAY_VIEW_CACHE_DIR: str = "/tmp/slippi-replay-view-cache"
     REPLAY_VIEW_ARCHIVE_DIR: str = "/app/uploads-view-archive"
     REPLAY_VIEW_CACHE_TTL_SECONDS: int = 86400

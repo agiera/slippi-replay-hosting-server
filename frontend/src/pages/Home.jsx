@@ -8,6 +8,7 @@ import {
   openStreamEvents,
 } from "../lib/api";
 import crownImage from "../assets/images/crown.png";
+import VodButton from "../components/VodButton";
 import { mergeReplayRows } from "./homeRowLifecycle";
 import {
   applySnapshotOrStatusFrame,
@@ -1383,6 +1384,7 @@ export default function Home() {
                             >
                               Download
                             </button>
+                            <VodButton fileId={fileId} isPublic={row.repository_is_public} />
                           </>
                         )}
                       </div>

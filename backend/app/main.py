@@ -8,6 +8,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.ftp_server import start_ftp_server, stop_ftp_server
+from app.services.render_output import requeue_orphaned_jobs
 from app.services.user_service import ensure_superuser_exists
 
 
@@ -16,6 +17,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     db = SessionLocal()
     try:
         ensure_superuser_exists(db)
+        requeue_orphaned_jobs(db)
     finally:
         db.close()
 
