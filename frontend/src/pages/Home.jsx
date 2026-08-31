@@ -268,8 +268,14 @@ function buildReplayDownloadUrl(fileId) {
   return buildApiUrl(`/replays/files/${fileId}/download`);
 }
 
-function buildSlippiDeepLink(fileId) {
-  const replayUrl = buildReplayDownloadUrl(fileId);
+function resolveReplayDownloadUrl(row) {
+  if (row?.download_url) {
+    return buildApiUrl(row.download_url);
+  }
+  return buildReplayDownloadUrl(row?.fileId ?? row?.id);
+}
+
+function buildSlippiDeepLink(replayUrl) {
   if (!replayUrl) {
     return "";
   }
@@ -1107,11 +1113,11 @@ export default function Home() {
     return `${SLIPPILAB_URL}?replayUrl=${encodeURIComponent(replayTarget)}`;
   }
 
-  function downloadReplay(fileId) {
-    if (!fileId) {
+  function downloadReplay(row) {
+    const replayUrl = resolveReplayDownloadUrl(row);
+    if (!replayUrl) {
       return;
     }
-    const replayUrl = buildReplayDownloadUrl(fileId);
     window.open(replayUrl, "_blank", "noopener,noreferrer");
   }
 
@@ -1119,7 +1125,7 @@ export default function Home() {
     if (!fileId) {
       return;
     }
-    const slippiLink = buildSlippiDeepLink(fileId);
+    const slippiLink = buildSlippiDeepLink(buildReplayDownloadUrl(fileId));
     if (!slippiLink) {
       return;
     }
@@ -1273,7 +1279,8 @@ export default function Home() {
                   const isLiveRow = row.lifecycle === "live";
                   const isStreamingLifecycle = row.lifecycle === "live" || row.lifecycle === "finalizing";
                   const fileId = row.fileId;
-                  const viewerHref = buildSlippiLabViewerUrl(buildReplayDownloadUrl(fileId));
+                  const replayDownloadUrl = resolveReplayDownloadUrl(row);
+                  const viewerHref = buildSlippiLabViewerUrl(replayDownloadUrl);
                   const repoTournamentLabel = row.repository_label || "-";
                   const sourceLabel = row.source_label || "-";
                   const streamBadgeLabel = row.lifecycle === "finalizing" ? "FINALIZING" : "LIVE";
@@ -1354,7 +1361,7 @@ export default function Home() {
                           <>
                             <a
                               className="viewer-row-btn"
-                              href={buildSlippiDeepLink(fileId) || "#"}
+                              href={buildSlippiDeepLink(replayDownloadUrl) || "#"}
                               onClick={(event) => {
                                 if (!fileId) {
                                   event.preventDefault();
@@ -1379,7 +1386,7 @@ export default function Home() {
                             <button
                               type="button"
                               className="viewer-row-btn"
-                              onClick={() => downloadReplay(fileId)}
+                              onClick={() => downloadReplay(row)}
                               disabled={!fileId}
                             >
                               Download

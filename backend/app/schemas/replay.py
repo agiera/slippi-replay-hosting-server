@@ -23,6 +23,7 @@ class ReplayFilePublic(BaseModel):
     source_name: str | None = None
     resolved_tournament_name: str | None = None
     repository_is_public: bool = False
+    download_url: str | None = None
     size_bytes: int
     birth_time: str | None
     player_1: str | None

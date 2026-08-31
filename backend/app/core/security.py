@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import hashlib
+import hmac
+import time
 
 import bcrypt
 import jwt
@@ -49,3 +52,16 @@ def decode_token(token: str) -> dict | None:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
     except PyJWTError:
         return None
+
+
+def create_download_signature(file_id: int, expires_at: int) -> str:
+    message = f"replay-download:{file_id}:{expires_at}".encode()
+    return hmac.new(settings.SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()
+
+
+def verify_download_signature(file_id: int, expires_at: int | None, signature: str | None) -> bool:
+    if not expires_at or not signature:
+        return False
+    if expires_at < int(time.time()):
+        return False
+    return hmac.compare_digest(create_download_signature(file_id, expires_at), signature)

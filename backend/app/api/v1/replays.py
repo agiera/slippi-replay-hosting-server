@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.api.v1.deps import get_optional_user
 from app.core.config import settings
+from app.core.security import create_download_signature, verify_download_signature
 from app.db.session import get_db
 from app.models.api_token import ApiToken
 from app.models.file import File
@@ -156,6 +158,16 @@ def _hidden_repository_names(db: Session, user: User | None) -> set[str]:
     return private_names - member_names
 
 
+def _build_download_url(file_id: int, is_public_repository: bool) -> str:
+    """Relative to the API v1 base; signed with an expiry for private repositories."""
+    path = f"/replays/files/{file_id}/download"
+    if is_public_repository:
+        return path
+    expires_at = int(time.time()) + settings.SIGNED_DOWNLOAD_TTL_SECONDS
+    signature = create_download_signature(file_id, expires_at)
+    return f"{path}?exp={expires_at}&sig={signature}"
+
+
 def _matches_rank_filter(rank_values: list[str], player_one_rank: str | None, player_two_rank: str | None) -> bool:
     if not rank_values:
         return True
@@ -196,6 +208,8 @@ def download_file(
     file_id: int,
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_optional_user),
+    exp: int | None = Query(None),
+    sig: str | None = Query(None),
 ) -> FileResponse:
     prune_view_cache()
 
@@ -205,7 +219,8 @@ def download_file(
 
     repository_name, _ = _extract_repo_collection(file_row.folder)
     if repository_name and repository_name in _hidden_repository_names(db, current_user):
-        raise HTTPException(status_code=404, detail="File not found")
+        if not verify_download_signature(file_id, exp, sig):
+            raise HTTPException(status_code=404, detail="File not found")
 
     storage_root = Path(settings.REPLAY_STORAGE_DIR).resolve()
     candidate = (storage_root / file_row.folder / file_row.name).resolve()
@@ -794,6 +809,7 @@ def list_files(
         if not resolved_tournament_name and repository_name:
             resolved_tournament_name = resolved_tournament_by_repo.get(repository_name)
 
+        is_public_repository = bool(repository_name and repository_name in public_repo_names)
         items.append(
             ReplayFilePublic(
                 id=row.file_id,
@@ -802,7 +818,8 @@ def list_files(
                 stream_game_id=row.stream_game_id,
                 source_name=source_name,
                 resolved_tournament_name=resolved_tournament_name,
-                repository_is_public=bool(repository_name and repository_name in public_repo_names),
+                repository_is_public=is_public_repository,
+                download_url=_build_download_url(row.file_id, is_public_repository),
                 size_bytes=row.size_bytes,
                 birth_time=row.birth_time,
                 player_1=row.player_1,

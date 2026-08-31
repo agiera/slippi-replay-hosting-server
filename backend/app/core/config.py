@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     REPLAY_VIEW_ARCHIVE_DIR: str = "/app/uploads-view-archive"
     REPLAY_VIEW_CACHE_TTL_SECONDS: int = 86400
     REPLAY_VIEW_CACHE_PRUNE_INTERVAL_SECONDS: int = 600
+    SIGNED_DOWNLOAD_TTL_SECONDS: int = 21600  # 6 hours; lifetime of signed private replay download links
     FTP_ENABLED: bool = False
     FTP_HOST: str = "0.0.0.0"
     FTP_PORT: int = 2121
