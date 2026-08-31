@@ -143,7 +143,7 @@ export async function fetchReplayFiles(params = {}) {
   if (params.include_handwarmers) search.set("include_handwarmers", String(params.include_handwarmers));
 
   const url = `${API_BASE}/replays/files${search.toString() ? `?${search.toString()}` : ""}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
     throw new Error(await extractError(res));
   }
@@ -151,7 +151,7 @@ export async function fetchReplayFiles(params = {}) {
 }
 
 export async function fetchReplayFilterOptions() {
-  const res = await fetch(`${API_BASE}/replays/filters`);
+  const res = await fetch(`${API_BASE}/replays/filters`, { headers: authHeaders() });
   if (!res.ok) {
     throw new Error(await extractError(res));
   }

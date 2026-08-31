@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import String, and_, exists, false, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
+from app.api.v1.deps import get_optional_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.api_token import ApiToken
@@ -17,6 +18,7 @@ from app.models.player import Player
 from app.models.repository import Repository
 from app.models.tournament_source import TournamentSource
 from app.models.tournament_series import TournamentSeries
+from app.models.user import User
 from app.schemas.streaming import StreamStatusResponse, TournamentSeriesPublic
 from app.schemas.replay import ReplayFileListResponse, ReplayFilePublic, ReplayPlayerPublic
 from app.services.ftp_server import get_source_live_replay_path, get_stream_events_since, get_stream_status_snapshot
@@ -137,6 +139,23 @@ def _extract_repo_collection(folder: str | None) -> tuple[str | None, str | None
     return repository, collection
 
 
+def _hidden_repository_names(db: Session, user: User | None) -> set[str]:
+    """Private repository names the requester is not allowed to see."""
+    private_names = {
+        name
+        for name in db.scalars(select(Repository.name).where(Repository.is_public.is_(False))).all()
+        if name
+    }
+    if not private_names:
+        return set()
+    if user is None:
+        return private_names
+    if user.role == "superuser":
+        return set()
+    member_names = {repo.name for repo in user.repositories}
+    return private_names - member_names
+
+
 def _matches_rank_filter(rank_values: list[str], player_one_rank: str | None, player_two_rank: str | None) -> bool:
     if not rank_values:
         return True
@@ -173,11 +192,19 @@ def _matches_rating_filter(
 
 
 @router.get("/files/{file_id}/download")
-def download_file(file_id: int, db: Session = Depends(get_db)) -> FileResponse:
+def download_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
+) -> FileResponse:
     prune_view_cache()
 
     file_row = db.get(File, file_id)
     if not file_row:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    repository_name, _ = _extract_repo_collection(file_row.folder)
+    if repository_name and repository_name in _hidden_repository_names(db, current_user):
         raise HTTPException(status_code=404, detail="File not found")
 
     storage_root = Path(settings.REPLAY_STORAGE_DIR).resolve()
@@ -232,7 +259,10 @@ def download_live_source_file(source_name: str) -> FileResponse:
 
 
 @router.get("/filters")
-def list_replay_filters(db: Session = Depends(get_db)) -> dict[str, list[str]]:
+def list_replay_filters(
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
+) -> dict[str, list[str]]:
     folders = db.scalars(select(File.folder).distinct()).all()
     source_names = db.scalars(select(ApiToken.source_name).distinct()).all()
     public_repository_names = db.scalars(
@@ -248,8 +278,11 @@ def list_replay_filters(db: Session = Depends(get_db)) -> dict[str, list[str]]:
     repositories: set[str] = {name for name in public_repository_names if name}
     sources = {name for name in source_names if name}
 
+    hidden_repositories = _hidden_repository_names(db, current_user)
     for folder in folders:
         repository, collection = _extract_repo_collection(folder)
+        if repository and repository in hidden_repositories:
+            continue
         if repository:
             repositories.add(repository)
         # Keep parsed source as fallback for non-token historical imports.
@@ -286,6 +319,7 @@ def list_files(
     collection: str | None = Query(None),
     handwarmer: str | None = Query(None),
     include_handwarmers: int | None = Query(None, ge=0, le=1),
+    current_user: User | None = Depends(get_optional_user),
 ) -> ReplayFileListResponse:
     player_one = aliased(Player)
     player_two = aliased(Player)
@@ -298,6 +332,15 @@ def list_files(
     )
 
     conditions = []
+
+    for hidden_repo_name in _hidden_repository_names(db, current_user):
+        conditions.append(
+            ~or_(
+                File.folder == hidden_repo_name,
+                File.folder.ilike(f"{hidden_repo_name}/%"),
+                File.folder.ilike(f"uploads/{hidden_repo_name}/%"),
+            )
+        )
 
     if cursor is not None:
         conditions.append(File._id < cursor)
