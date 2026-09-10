@@ -340,7 +340,6 @@ class ReplayFTPHandler(FTPHandler):
 
             replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
             self._session_replay_transfer_attempted = True
-            data = _finalize_streamed_slp_raw_length(data)
 
             stream_game_id = None
             upload_started_at = None
@@ -360,13 +359,30 @@ class ReplayFTPHandler(FTPHandler):
                 flush=True,
             )
 
-            self._persist_replay_and_record(
-                original_name=original_name,
-                data=data,
-                replay_metadata_override=replay_metadata_override,
-                stream_game_id=stream_game_id,
-                upload_started_at=upload_started_at,
+            # Mark the upload completed now so a fast QUIT is not misread as an
+            # abandoned session while finalization still runs off-loop.
+            _record_stream_event(
+                source_name=self.ftp_session.source_name,
+                username=self.ftp_session.username,
+                repository=self.ftp_session.repository_name,
+                filename=original_name,
+                status="completed",
             )
+
+            # Parse + persist take seconds on the Pi; running them here blocks the
+            # FTP event loop and refuses other Wiis' game-start connections.
+            worker = threading.Thread(
+                target=self._finalize_received_replay,
+                kwargs={
+                    "original_name": original_name,
+                    "data": data,
+                    "replay_metadata_override": replay_metadata_override,
+                    "stream_game_id": stream_game_id,
+                    "upload_started_at": upload_started_at,
+                },
+                daemon=True,
+            )
+            worker.start()
         except Exception as exc:
             if self.ftp_session is not None:
                 _record_stream_event(
@@ -387,6 +403,41 @@ class ReplayFTPHandler(FTPHandler):
                 staged_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    def _finalize_received_replay(
+        self,
+        *,
+        original_name: str,
+        data: bytes,
+        replay_metadata_override: dict | None,
+        stream_game_id: str | None,
+        upload_started_at: datetime | None,
+    ) -> None:
+        started = time.monotonic()
+        try:
+            data = _finalize_streamed_slp_raw_length(data)
+            self._persist_replay_and_record(
+                original_name=original_name,
+                data=data,
+                replay_metadata_override=replay_metadata_override,
+                stream_game_id=stream_game_id,
+                upload_started_at=upload_started_at,
+            )
+        except Exception as exc:
+            if self.ftp_session is not None:
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=self.ftp_session.repository_name,
+                    filename=original_name,
+                    status="failed",
+                )
+            print(f"[FTP] Failed to finalize uploaded file '{original_name}': {exc}", flush=True)
+        finally:
+            print(
+                f"[FTP][TRACE] Off-loop finalization for '{original_name}' took {time.monotonic() - started:.2f}s",
+                flush=True,
+            )
 
     def _persist_replay_and_record(
         self,
