@@ -24,11 +24,24 @@ from app.services.ftp_server import (
     get_stream_events_since,
     _is_parsed_slippi_filename,
     _load_source_metadata_override,
+    _source_connection_index,
     _source_connections,
     _stream_state_lock,
     _store_source_metadata_override,
     _take_next_source_metadata_override,
 )
+
+
+def _reset_stream_state() -> None:
+    with _stream_state_lock:
+        _source_connections.clear()
+        _source_connection_index.clear()
+
+
+def _get_source_state(source_name: str) -> dict:
+    # Stream state is keyed by upload_session_id; resolve via the source index.
+    with _stream_state_lock:
+        return dict(_source_connections[_source_connection_index[source_name]])
 
 
 def test_finalize_streamed_slp_raw_length():
@@ -121,8 +134,13 @@ def test_ftp_auth_rejects_wrong_token_or_role(db_session, testing_session_local)
         _authenticate_ftp_credentials("notuploader", "wrong-token", session_factory=testing_session_local)
 
 
-def test_source_token_authorizer_replaces_home_for_reused_username(monkeypatch):
+def test_source_token_authorizer_replaces_home_for_reused_username(monkeypatch, tmp_path):
     authorizer = SourceTokenAuthorizer()
+
+    old_home = tmp_path / "old-session-home"
+    new_home = tmp_path / "new-session-home"
+    old_home.mkdir()
+    new_home.mkdir()
 
     first_context = FTPSessionContext(
         user_id=1,
@@ -131,7 +149,7 @@ def test_source_token_authorizer_replaces_home_for_reused_username(monkeypatch):
         source_name="NGPR-WII-07",
         repositories={"New Game Plus Revival"},
         repository_name="New Game Plus Revival",
-        session_home="/tmp/old-session-home",
+        session_home=str(old_home),
     )
     second_context = FTPSessionContext(
         user_id=1,
@@ -140,19 +158,24 @@ def test_source_token_authorizer_replaces_home_for_reused_username(monkeypatch):
         source_name="NGPR-WII-07",
         repositories={"New Game Plus Revival"},
         repository_name="New Game Plus Revival",
-        session_home="/tmp/new-session-home",
+        session_home=str(new_home),
     )
 
     calls = iter([first_context, second_context])
     monkeypatch.setattr(
         "app.services.ftp_server._authenticate_ftp_credentials",
-        lambda username, password, handler=None, session_factory=None: next(calls),
+        lambda username, token_value, session_factory=None: next(calls),
+    )
+    homes = iter([str(old_home), str(new_home)])
+    monkeypatch.setattr(
+        "app.services.ftp_server._prepare_session_home",
+        lambda username, repositories, session_key: next(homes),
     )
 
     authorizer.validate_authentication("agiera", "token-1", handler=None)
     authorizer.validate_authentication("agiera", "token-2", handler=None)
 
-    assert authorizer.get_home("agiera") == "/tmp/new-session-home"
+    assert authorizer.get_home_dir("agiera") == str(new_home)
 
 
 def _encode_len_prefixed_ascii(value: str) -> bytes:
@@ -316,8 +339,7 @@ def test_take_next_source_metadata_override_prefers_explicit_sidecar_and_clears_
 def test_stream_preview_merges_controller_and_slippi_metadata():
     source_name = "merge-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     _set_source_player_preview(
@@ -342,8 +364,7 @@ def test_stream_preview_merges_controller_and_slippi_metadata():
         stage=31,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     assert state["stage_preview"] == 31
     assert len(state["player_preview"]) == 1
@@ -358,8 +379,7 @@ def test_stream_preview_merges_controller_and_slippi_metadata():
 def test_stream_preview_carries_slippi_character_and_cpu():
     source_name = "slp-preview-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     # Seed a controller-only human (as the sidecar/on_login would).
@@ -378,8 +398,7 @@ def test_stream_preview_carries_slippi_character_and_cpu():
         stage=8,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     preview_by_port = {player["port"]: player for player in state["player_preview"]}
     assert state["stage_preview"] == 8
@@ -395,8 +414,7 @@ def test_stream_preview_carries_slippi_character_and_cpu():
 def test_stream_preview_enrich_only_omits_sidecar_only_players():
     source_name = "enrich-only-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     # SLP metadata defines the roster: a human on port 1 and a CPU on port 3.
@@ -419,8 +437,7 @@ def test_stream_preview_enrich_only_omits_sidecar_only_players():
         enrich_only=True,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     preview_by_port = {player["port"]: player for player in state["player_preview"]}
     # Only the SLP-roster ports remain; the sidecar-only port 2 is omitted.
@@ -437,8 +454,7 @@ def test_stream_preview_enrich_only_omits_sidecar_only_players():
 def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
     source_name = "sidecar-first-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     # Real-world ordering: the sidecar (.meta.json) is uploaded before the .slp,
@@ -452,8 +468,7 @@ def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
         enrich_only=True,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
     preview_by_port = {player["port"]: player for player in state["player_preview"]}
     # Before the SLP roster lands, sidecar data is buffered but does not seed a
     # temporary live preview. The row should wait for parsed SLP metadata.
@@ -470,8 +485,7 @@ def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
         stage=8,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     preview_by_port = {player["port"]: player for player in state["player_preview"]}
     assert set(preview_by_port) == {1, 3}
@@ -484,8 +498,7 @@ def test_stream_preview_sidecar_before_slp_roster_enriches_when_roster_lands():
 def test_stream_preview_sidecar_seeds_baked_identity_fields_before_slp_roster():
     source_name = "baked-sidecar-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     _set_source_player_preview(
@@ -509,8 +522,7 @@ def test_stream_preview_sidecar_seeds_baked_identity_fields_before_slp_roster():
         enrich_only=True,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     assert state["player_preview"] == []
     assert state["pending_enrichment"][1]["display_name"] == "Test User1"
@@ -524,8 +536,7 @@ def test_stream_preview_sidecar_seeds_baked_identity_fields_before_slp_roster():
 def test_stream_preview_slp_roster_overrides_seeded_sidecar_identity_fields_but_keeps_firmware():
     source_name = "baked-sidecar-overridden-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     _set_source_player_preview(
@@ -557,8 +568,7 @@ def test_stream_preview_slp_roster_overrides_seeded_sidecar_identity_fields_but_
         stage=31,
     )
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     preview = state["player_preview"][0]
     assert state["stage_preview"] == 31
@@ -571,8 +581,7 @@ def test_stream_preview_slp_roster_overrides_seeded_sidecar_identity_fields_but_
 def test_stream_phase_marks_ended_as_completion():
     source_name = "phase-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     _record_stream_event(source_name, "ftpuser", "public", "", "started")
@@ -580,8 +589,7 @@ def test_stream_phase_marks_ended_as_completion():
     _record_stream_event(source_name, "ftpuser", "public", "a.slp", "slippi_file_metadata")
     _record_stream_event(source_name, "ftpuser", "public", "a.slp", "ended")
 
-    with _stream_state_lock:
-        state = dict(_source_connections[source_name])
+    state = _get_source_state(source_name)
 
     assert state["stream_phase"] == "ended"
     assert state["last_completed_at"] is not None
@@ -595,8 +603,7 @@ def test_parsed_slippi_filename_helper():
 def test_get_stream_events_since_returns_incremental_ordered_events():
     source_name = "events-source"
 
-    with _stream_state_lock:
-        _source_connections.clear()
+    _reset_stream_state()
 
     _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
     _record_stream_event(source_name, "ftpuser", "public", "", "started")
