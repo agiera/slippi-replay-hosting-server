@@ -9,39 +9,42 @@ from app.models.api_token import ApiToken
 from app.models.repository import Repository
 from app.models.source_metadata import SourceMetadata
 from app.models.user import User
+from app.services import stream_state
 from app.services.ftp_server import (
     FTPSessionContext,
     SourceTokenAuthorizer,
-    _record_stream_event,
     _prepare_session_home,
-    _set_source_connection_state,
-    _set_source_player_preview,
     _authenticate_ftp_credentials,
     _clear_source_metadata_override,
     _decode_site_slpmeta_ubjson,
     _finalize_streamed_slp_raw_length,
     _normalize_metadata_override_payload,
-    get_stream_events_since,
     _is_parsed_slippi_filename,
     _load_source_metadata_override,
-    _source_connection_index,
-    _source_connections,
-    _stream_state_lock,
     _store_source_metadata_override,
     _take_next_source_metadata_override,
 )
+from app.services.stream_state import (
+    get_stream_events_since,
+    record_stream_event as _record_stream_event,
+    set_source_connection_state as _set_source_connection_state,
+    set_source_player_preview as _set_source_player_preview,
+)
+
+
+@pytest.fixture(autouse=True)
+def _stream_state_on_test_db(stream_state_db):
+    pass
 
 
 def _reset_stream_state() -> None:
-    with _stream_state_lock:
-        _source_connections.clear()
-        _source_connection_index.clear()
+    stream_state.clear_all()
 
 
 def _get_source_state(source_name: str) -> dict:
-    # Stream state is keyed by upload_session_id; resolve via the source index.
-    with _stream_state_lock:
-        return dict(_source_connections[_source_connection_index[source_name]])
+    state = stream_state.get_latest_connection(source_name)
+    assert state is not None, f"no connected stream state for {source_name!r}"
+    return state
 
 
 def test_finalize_streamed_slp_raw_length():

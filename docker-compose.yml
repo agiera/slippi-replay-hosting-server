@@ -34,14 +34,14 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
       REPLAY_VIEW_ARCHIVE_DIR: /app/uploads-view-archive
+      FTP_STAGING_DIR: /app/ftp-staging
     ports:
       - "8000:8000"
-      - "${FTP_PORT:-2121}:${FTP_PORT:-2121}"
-      - "${FTP_PASSIVE_PORTS:-22100-22199}:${FTP_PASSIVE_PORTS:-22100-22199}"
     volumes:
       - ./backend:/app
       - ./uploads:/app/uploads
       - ./uploads-view-archive:/app/uploads-view-archive
+      - ./ftp-staging:/app/ftp-staging
     healthcheck:
       test:
         [
@@ -54,7 +54,43 @@ services:
       start_period: 45s
       start_interval: 1s
     command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5"
+
+  ftp:
+    # Same image as backend; runs only the FTP ingest so backend reloads never
+    # drop an in-flight upload. Shares state with the API via Postgres.
+    image: slippi-replay-hosting-server-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        # backend runs `alembic upgrade head`; wait so the stream tables exist.
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
+      FTP_STAGING_DIR: /app/ftp-staging
+    ports:
+      - "${FTP_PORT:-2121}:${FTP_PORT:-2121}"
+      - "${FTP_PASSIVE_PORTS:-22100-22199}:${FTP_PASSIVE_PORTS:-22100-22199}"
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+      - ./ftp-staging:/app/ftp-staging
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket,sys; s=socket.create_connection(('127.0.0.1', ${FTP_PORT:-2121}), timeout=2); s.close()\"",
+        ]
+      interval: 1m
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    command: python -m app.ftp_main
 
   frontend:
     build:

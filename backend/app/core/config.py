@@ -33,12 +33,13 @@ class Settings(BaseSettings):
     REPLAY_VIEW_CACHE_TTL_SECONDS: int = 86400
     REPLAY_VIEW_CACHE_PRUNE_INTERVAL_SECONDS: int = 600
     SIGNED_DOWNLOAD_TTL_SECONDS: int = 21600  # 6 hours; lifetime of signed private replay download links
-    FTP_ENABLED: bool = False
     FTP_HOST: str = "0.0.0.0"
     FTP_PORT: int = 2121
     FTP_MASQUERADE_ADDRESS: str = ""
     FTP_PASSIVE_PORTS: str = ""
-    FTP_STAGING_DIR: str = "/tmp/slippi-ftp-staging"
+    # Must be a volume shared by the ftp and backend containers: the API serves
+    # in-progress replays straight from here.
+    FTP_STAGING_DIR: str = "/app/ftp-staging"
     FTP_MAX_CONNECTIONS: int = 128
     FTP_MAX_CONNECTIONS_PER_IP: int = 8
 

@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 
 from fastapi.responses import FileResponse, StreamingResponse
@@ -23,12 +24,16 @@ from app.models.tournament_series import TournamentSeries
 from app.models.user import User
 from app.schemas.streaming import StreamStatusResponse, TournamentSeriesPublic
 from app.schemas.replay import ReplayFileListResponse, ReplayFilePublic, ReplayPlayerPublic
-from app.services.ftp_server import get_source_live_replay_path, get_stream_events_since, get_stream_status_snapshot
 from app.services.slippi_profile import fetch_profile_by_connect_code
+from app.services.stream_notify import stream_change_notifier
+from app.services.stream_state import get_source_live_replay_path, get_stream_events_since, get_stream_status_snapshot
 from app.services.tournament_slug import resolve_tournament_name
 from app.services.view_cache import PEPPI_SUFFIX, get_cached_replay_path, prune_view_cache, rebuild_cached_replay_from_archive
 
 router = APIRouter()
+
+_SSE_HEARTBEAT_SECONDS = 15.0
+_SSE_COALESCE_SECONDS = 0.05
 
 _STAGE_NAMES: dict[int, str] = {
     2: "Fountain of Dreams",
@@ -897,7 +902,7 @@ async def stream_events(
     except ValueError:
         cursor = 0
 
-    snapshot = get_stream_status_snapshot(source_names)
+    snapshot = await run_in_threadpool(get_stream_status_snapshot, source_names)
     payload = {
         "tournament": TournamentSeriesPublic.model_validate(tournament).model_dump() if tournament else None,
         "sources": jsonable_encoder(snapshot["sources"]),
@@ -912,14 +917,20 @@ async def stream_events(
         nonlocal cursor, sources_signature
 
         yield f"event: snapshot\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        last_emit = time.monotonic()
 
-        heartbeat_counter = 0
         while True:
+            # Sleep until Postgres NOTIFYs a stream-state change (or the heartbeat
+            # interval elapses); no DB query runs while nothing is happening.
+            changed = await stream_change_notifier.wait_for_change(timeout=_SSE_HEARTBEAT_SECONDS)
             if await request.is_disconnected():
                 break
+            if changed:
+                # A game start produces a burst of writes; let them coalesce.
+                await asyncio.sleep(_SSE_COALESCE_SECONDS)
 
             emitted = False
-            for event_row in get_stream_events_since(cursor, source_names):
+            for event_row in await run_in_threadpool(get_stream_events_since, cursor, source_names):
                 encoded = json.dumps(jsonable_encoder(event_row), separators=(",", ":"))
                 event_id = int(event_row.get("event_id", 0))
                 if event_id <= cursor:
@@ -928,7 +939,7 @@ async def stream_events(
                 emitted = True
                 yield f"id: {event_id}\nevent: stream_event\ndata: {encoded}\n\n"
 
-            current_snapshot = get_stream_status_snapshot(source_names)
+            current_snapshot = await run_in_threadpool(get_stream_status_snapshot, source_names)
             current_sources = jsonable_encoder(current_snapshot["sources"])
             current_sources_signature = json.dumps(current_sources, separators=(",", ":"), sort_keys=True)
             if current_sources_signature != sources_signature:
@@ -940,12 +951,12 @@ async def stream_events(
                 yield f"event: status\ndata: {json.dumps(status_payload, separators=(',', ':'))}\n\n"
                 emitted = True
 
-            heartbeat_counter += 1
-            if not emitted and heartbeat_counter >= 15:
-                heartbeat_counter = 0
+            now = time.monotonic()
+            if emitted:
+                last_emit = now
+            elif now - last_emit >= _SSE_HEARTBEAT_SECONDS:
+                last_emit = now
                 yield f"event: heartbeat\ndata: {{\"cursor\":{cursor}}}\n\n"
-
-            await asyncio.sleep(1.0)
 
     return StreamingResponse(
         event_stream(),

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.services.ftp_server import start_ftp_server, stop_ftp_server
+from app.services.stream_notify import stream_change_notifier
 from app.services.user_service import ensure_superuser_exists
 
 
@@ -19,11 +19,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     finally:
         db.close()
 
-    start_ftp_server()
+    # The FTP server runs in its own process (app.ftp_main); this process only
+    # listens for its state changes to push SSE updates.
+    stream_change_notifier.start()
     try:
         yield
     finally:
-        stop_ftp_server()
+        stream_change_notifier.stop()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)

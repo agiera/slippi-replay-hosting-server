@@ -17,8 +17,8 @@ RUN apt-get update \
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir uv
 
-COPY pyproject.toml /app/pyproject.toml
-RUN uv sync --no-dev --no-install-project \
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --locked --no-dev --no-install-project \
     && uv pip install --python /opt/venv/bin/python --force-reinstall "https://github.com/agiera/peppi-py/archive/refs/heads/${PEPPI_PY_REF}.zip"
 
 COPY . /app

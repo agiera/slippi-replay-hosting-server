@@ -6,9 +6,8 @@ import shutil
 import threading
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 from pyftpdlib.authorizers import AuthenticationFailed, DummyAuthorizer
@@ -29,6 +28,27 @@ from app.services.peppi_ingest import (
     parse_slippi_start_partial,
 )
 from app.services.replay_upload import persist_replay_upload
+from app.services.stream_state import (
+    get_connection as _get_connection,
+    get_latest_connection as _get_latest_source_connection,
+    get_source_live_replay_path,
+    get_stream_events_since,
+    get_stream_status_snapshot,
+    normalize_ubjson_player_fields as _normalize_ubjson_player_fields,
+    record_stream_event as _record_stream_event,
+    session_started_without_completion as _session_started_without_completion,
+    set_source_active_staged_file as _set_source_active_staged_file,
+    set_source_connection_state as _set_source_connection_state,
+    set_source_player_preview as _set_source_player_preview,
+)
+
+__all__ = [
+    "get_source_live_replay_path",
+    "get_stream_events_since",
+    "get_stream_status_snapshot",
+    "start_ftp_server",
+    "stop_ftp_server",
+]
 
 
 _STREAMED_SLP_HEADER = b"{U\x03raw[$U#l\x00\x00\x00\x00"
@@ -152,15 +172,9 @@ class ReplayFTPHandler(FTPHandler):
     def _trace_scope(self) -> str:
         if self.ftp_session is None:
             return "source='-' upload_session_id='-'"
-        upload_session_id = self.ftp_session.upload_session_id
-        if upload_session_id is None:
-            with _stream_state_lock:
-                connection_id = _source_connection_index.get(self.ftp_session.source_name)
-                source_state = _source_connections.get(connection_id, {}) if connection_id else {}
-                upload_session_id = source_state.get("upload_session_id")
         return (
             f"source='{self.ftp_session.source_name}' "
-            f"upload_session_id='{upload_session_id}'"
+            f"upload_session_id='{self.ftp_session.upload_session_id}'"
         )
 
     def _trace_upload_scope(
@@ -253,12 +267,11 @@ class ReplayFTPHandler(FTPHandler):
         if self.ftp_session is not None and not self._is_metadata_sidecar_filename(file):
             _set_source_active_staged_file(self.ftp_session.source_name, str(file))
             if stor_file_key:
-                with _stream_state_lock:
-                    source_state = _source_connections.get(self.ftp_session.upload_session_id or _source_connection_index.get(self.ftp_session.source_name), {})
-                    self._session_upload_context_by_file_key[stor_file_key] = (
-                        source_state.get("stream_game_id"),
-                        source_state.get("active_upload_started_at"),
-                    )
+                source_state = self._current_source_state()
+                self._session_upload_context_by_file_key[stor_file_key] = (
+                    source_state.get("stream_game_id"),
+                    source_state.get("active_upload_started_at"),
+                )
                 captured_stream_game_id, captured_started_at = self._session_upload_context_by_file_key.get(
                     stor_file_key,
                     (None, None),
@@ -384,11 +397,10 @@ class ReplayFTPHandler(FTPHandler):
                     (None, None),
                 )
             if stream_game_id is None and self.ftp_session.upload_session_id is not None:
-                with _stream_state_lock:
-                    source_state = _source_connections.get(self.ftp_session.upload_session_id)
-                    if source_state is not None:
-                        stream_game_id = source_state.get("stream_game_id")
-                        upload_started_at = source_state.get("active_upload_started_at")
+                source_state = _get_connection(self.ftp_session.upload_session_id)
+                if source_state is not None:
+                    stream_game_id = source_state.get("stream_game_id")
+                    upload_started_at = source_state.get("active_upload_started_at")
             print(
                 f"[FTP][TRACE] Finalizing file='{original_name}' {self._trace_upload_scope(file_key=file_key, stream_game_id=stream_game_id)} captured_upload_started_at='{upload_started_at}'",
                 flush=True,
@@ -499,19 +511,11 @@ class ReplayFTPHandler(FTPHandler):
 
         repository_name = self.ftp_session.repository_name
         if stream_game_id is None or upload_started_at is None:
-            with _stream_state_lock:
-                source_state = {}
-                connection_id = self.ftp_session.upload_session_id
-                if connection_id is not None:
-                    source_state = _source_connections.get(connection_id, {})
-                if not source_state:
-                    fallback_connection_id = _source_connection_index.get(self.ftp_session.source_name)
-                    if fallback_connection_id is not None:
-                        source_state = _source_connections.get(fallback_connection_id, {})
-                if stream_game_id is None:
-                    stream_game_id = source_state.get("stream_game_id")
-                if upload_started_at is None:
-                    upload_started_at = source_state.get("active_upload_started_at")
+            source_state = self._current_source_state()
+            if stream_game_id is None:
+                stream_game_id = source_state.get("stream_game_id")
+            if upload_started_at is None:
+                upload_started_at = source_state.get("active_upload_started_at")
             print(
                 f"[FTP][TRACE] Fallback stream context for replay '{original_name}': {self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id)} upload_started_at='{upload_started_at}'",
                 flush=True,
@@ -667,6 +671,17 @@ class ReplayFTPHandler(FTPHandler):
     @staticmethod
     def _is_metadata_sidecar_filename(filename: str) -> bool:
         return str(filename).lower().endswith(".meta.json")
+
+    def _current_source_state(self) -> dict:
+        """This session's connection row, falling back to the source's latest one."""
+        if self.ftp_session is None:
+            return {}
+        state = None
+        if self.ftp_session.upload_session_id is not None:
+            state = _get_connection(self.ftp_session.upload_session_id)
+        if state is None:
+            state = _get_latest_source_connection(self.ftp_session.source_name)
+        return state or {}
 
     @staticmethod
     def _session_file_key(value: str) -> str:
@@ -858,30 +873,6 @@ def _log_controller_metadata_payload(
         print(f"[FTP][META]   {line}", file=sys.stderr, flush=True)
 
 
-def _normalize_ubjson_player_fields(player_meta: dict) -> dict:
-    normalized: dict[str, str] = {}
-
-    for key, value in player_meta.items():
-        if not isinstance(value, str):
-            continue
-        key_norm = "".join(ch for ch in str(key).lower() if ch.isalnum())
-
-        if key_norm in {"nametag", "tag"}:
-            normalized["tag"] = value
-        elif key_norm in {"name", "displayname", "display"}:
-            normalized["display_name"] = value
-        elif key_norm in {"slippi", "slippicode", "connectcode", "code"}:
-            normalized["slippi_code"] = value
-        elif key_norm in {"smashgg", "startgg"}:
-            normalized["startgg_id"] = value
-        elif key_norm == "parrygg":
-            normalized["parrygg_id"] = value
-        elif key_norm == "firmware":
-            normalized["firmware"] = value
-
-    return normalized
-
-
 def _parse_ubjson_object(data: bytes, start: int) -> tuple[dict, int]:
     if start >= len(data) or data[start] != ord("{"):
         raise ValueError("expected object opener")
@@ -951,113 +942,9 @@ _server_lock = threading.Lock()
 _server: FTPServer | None = None
 _server_thread: threading.Thread | None = None
 
-_stream_state_lock = threading.Lock()
-_source_connections: dict[str, dict] = {}
-_source_connection_index: dict[str, str] = {}
-_recent_events: deque[dict] = deque(maxlen=500)
-_stream_event_sequence: int = 0
-
-
-def _latest_source_connection_id(source_name: str) -> str | None:
-    with _stream_state_lock:
-        return _source_connection_index.get(source_name)
-
-
-def _get_latest_source_connection(source_name: str) -> dict | None:
-    connection_id = _latest_source_connection_id(source_name)
-    if connection_id is None:
-        return None
-    with _stream_state_lock:
-        return _source_connections.get(connection_id)
-
 
 def _is_parsed_slippi_filename(filename: str | None) -> bool:
     return str(filename or "").lower().endswith(".peppi.json.gz")
-
-
-def _set_source_connection_state(source_name: str, username: str, repositories: set[str], connected: bool) -> str | None:
-    with _stream_state_lock:
-        if connected:
-            existing_last_completed_at = None
-            previous_connection_id = _source_connection_index.get(source_name)
-            if previous_connection_id is not None:
-                previous = _source_connections.get(previous_connection_id)
-                if previous is not None:
-                    previous["connected"] = False
-                    previous["updated_at"] = datetime.now(timezone.utc)
-                    existing_last_completed_at = previous.get("last_completed_at")
-
-            now = datetime.now(timezone.utc)
-            upload_session_id = str(uuid.uuid4())
-            stream_game_id = str(uuid.uuid4())
-            # A new connection represents a new game upload; start the live preview
-            # fresh so stale ports from a previous game do not linger and merge.
-            _source_connections[upload_session_id] = {
-                "source_name": source_name,
-                "username": username,
-                "upload_session_id": upload_session_id,
-                "stream_game_id": stream_game_id,
-                "repositories": sorted(repositories),
-                "connected": True,
-                "updated_at": now,
-                "player_preview": [],
-                "stage_preview": None,
-                "pending_enrichment": {},
-                "preview_seeded_from_enrichment": False,
-                "connected_at": now,
-                "last_activity_at": now,
-                "last_completed_at": existing_last_completed_at,
-                "stream_phase": "started",
-                "active_staged_path": None,
-                "active_upload_started_at": None,
-            }
-            _source_connection_index[source_name] = upload_session_id
-            return upload_session_id
-
-        connection_id = _source_connection_index.get(source_name)
-        if connection_id is None:
-            return None
-        row = _source_connections.get(connection_id)
-        if row is None:
-            _source_connection_index.pop(source_name, None)
-            return None
-        row["connected"] = False
-        row["updated_at"] = datetime.now(timezone.utc)
-        _source_connection_index.pop(source_name, None)
-        return row.get("upload_session_id")
-
-
-def _set_source_active_staged_file(source_name: str, staged_path: str | None) -> None:
-    with _stream_state_lock:
-        connection_id = _source_connection_index.get(source_name)
-        if connection_id is None:
-            return
-        row = _source_connections.get(connection_id)
-        if row is None:
-            return
-        row["active_staged_path"] = staged_path
-        row["active_upload_started_at"] = (
-            datetime.now(timezone.utc) if staged_path else None
-        )
-
-
-def get_source_live_replay_path(source_name: str) -> Path | None:
-    with _stream_state_lock:
-        connection_id = _source_connection_index.get(source_name)
-        if connection_id is None:
-            return None
-        row = _source_connections.get(connection_id)
-        if not row:
-            return None
-        value = row.get("active_staged_path")
-
-    if not value:
-        return None
-
-    try:
-        return Path(str(value))
-    except Exception:
-        return None
 
 
 def _live_partial_parse_worker(
@@ -1142,199 +1029,6 @@ def _live_partial_parse_worker(
 
         if stop_event.wait(poll_seconds):
             return
-
-
-def _set_source_player_preview(
-    source_name: str,
-    players: list[dict],
-    *,
-    stage: int | None = None,
-    enrich_only: bool = False,
-) -> None:
-    """Update the live player preview for a source.
-
-    The SLP metadata defines the roster of players that show up. When
-    ``enrich_only`` is True (e.g. for the controller-metadata sidecar), incoming
-    players may only fill in fields for ports that already exist in the roster;
-    ports that are not already present are omitted rather than added.
-    """
-    def _port_sort_key(player: dict) -> int:
-        try:
-            return int(player.get("port"))
-        except (TypeError, ValueError):
-            return 99
-
-    def _normalize_preview_player(player: dict) -> dict | None:
-        if not isinstance(player, dict):
-            return None
-
-        normalized_fields = _normalize_ubjson_player_fields(player)
-
-        port_value = player.get("port")
-        try:
-            port = int(port_value) if port_value is not None else None
-        except (TypeError, ValueError):
-            port = None
-
-        # Callers pass already-normalized 1..4 ports; reject anything out of range.
-        if port is not None and (port < 1 or port > 4):
-            port = None
-
-        display_name = normalized_fields.get("display_name") or player.get("display_name")
-        tag = normalized_fields.get("tag") or player.get("tag") or player.get("nametag")
-        slippi_code = (
-            normalized_fields.get("slippi_code")
-            or player.get("slippi_code")
-            or player.get("connect_code")
-            or player.get("connectCode")
-        )
-        firmware = normalized_fields.get("firmware") or player.get("firmware")
-
-        character_id = player.get("character_id")
-        if character_id is None:
-            character_id = player.get("character")
-        costume_id = player.get("costume_id")
-        if costume_id is None:
-            costume_id = player.get("costume")
-        player_type = player.get("type")
-        is_cpu = player.get("is_cpu")
-        if is_cpu is None and player_type is not None:
-            is_cpu = player_type == 1
-
-        if not any([display_name, tag, slippi_code, firmware, port is not None]):
-            return None
-
-        return {
-            "port": port,
-            "display_name": display_name,
-            "tag": tag,
-            "slippi_code": slippi_code,
-            "firmware": firmware,
-            "character_id": character_id,
-            "costume_id": costume_id,
-            "type": player_type,
-            "is_cpu": is_cpu,
-        }
-
-    incoming_preview: list[dict] = []
-    for player in players:
-        normalized_player = _normalize_preview_player(player)
-        if normalized_player is None:
-            continue
-        incoming_preview.append(normalized_player)
-
-    incoming_preview.sort(key=_port_sort_key)
-
-    normalized_stage: int | None = None
-    if stage is not None:
-        try:
-            normalized_stage = int(stage)
-        except (TypeError, ValueError):
-            normalized_stage = None
-
-    preview_fields = (
-        "port",
-        "display_name",
-        "tag",
-        "slippi_code",
-        "firmware",
-        "character_id",
-        "costume_id",
-        "type",
-        "is_cpu",
-    )
-
-    def _key_for(player: dict) -> int | None:
-        try:
-            return int(player.get("port")) if player.get("port") is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    with _stream_state_lock:
-        connection_id = _source_connection_index.get(source_name)
-        if connection_id is None:
-            return
-
-        conn = _source_connections.get(connection_id)
-        if conn is None:
-            return
-
-        existing_preview = conn.get("player_preview") or []
-        existing_by_port: dict[int | None, dict] = {}
-        for player in existing_preview:
-            existing_by_port[_key_for(player)] = dict(player)
-
-        # Per-port sidecar enrichment that has arrived but may not yet have a
-        # matching SLP-roster player. The sidecar is uploaded before the .slp, so
-        # its fields are stashed here and applied (fill-only) once the roster lands.
-        pending_enrichment: dict[int | None, dict] = dict(conn.get("pending_enrichment") or {})
-        preview_seeded_from_enrichment = bool(conn.get("preview_seeded_from_enrichment"))
-
-        if enrich_only:
-            # The sidecar may only populate ports that are (or will be) part of the
-            # SLP roster; it never introduces new players. Stash its fields and fill
-            # in any matching roster ports without clobbering SLP-derived values.
-            for player in incoming_preview:
-                key = _key_for(player)
-                fields = {
-                    field: player.get(field)
-                    for field in preview_fields
-                    if player.get(field) is not None and player.get(field) != ""
-                }
-                merged_fields = dict(pending_enrichment.get(key, {}))
-                merged_fields.update(fields)
-                pending_enrichment[key] = merged_fields
-
-                target = existing_by_port.get(key)
-                if target is not None:
-                    for field, value in merged_fields.items():
-                        if target.get(field) in (None, ""):
-                            target[field] = value
-
-            if existing_by_port:
-                merged_preview = list(existing_by_port.values())
-            else:
-                merged_preview = []
-                preview_seeded_from_enrichment = False
-        else:
-            merged_preview = []
-            incoming_keys: set[int | None] = set()
-            for player in incoming_preview:
-                key = _key_for(player)
-                incoming_keys.add(key)
-
-                merged = dict(existing_by_port.get(key, {}))
-                for field in preview_fields:
-                    value = player.get(field)
-                    if value is not None and value != "":
-                        merged[field] = value
-                merged_preview.append(merged)
-
-            for key, player in existing_by_port.items():
-                if key in incoming_keys or preview_seeded_from_enrichment:
-                    continue
-                merged_preview.append(player)
-
-            # Apply any sidecar enrichment received earlier to the roster ports,
-            # filling only fields the SLP metadata did not already provide.
-            for player in merged_preview:
-                for field, value in (pending_enrichment.get(_key_for(player)) or {}).items():
-                    if player.get(field) in (None, ""):
-                        player[field] = value
-
-            preview_seeded_from_enrichment = False
-
-        merged_preview.sort(key=_port_sort_key)
-
-        now = datetime.now(timezone.utc)
-        conn["pending_enrichment"] = pending_enrichment
-        conn["preview_seeded_from_enrichment"] = preview_seeded_from_enrichment
-        conn["player_preview"] = merged_preview
-        if normalized_stage is not None:
-            conn["stage_preview"] = normalized_stage
-        conn["updated_at"] = now
-        conn["last_activity_at"] = now
-
 
 
 def _load_source_metadata_override(source_name: str, session_factory=SessionLocal) -> dict | None:
@@ -1429,101 +1123,6 @@ def _refresh_source_metadata_from_file(db, *, file_id: int, existing_payload: di
     return merged_payload
 
 
-def _session_started_without_completion(source_name: str) -> bool:
-    with _stream_state_lock:
-        connection_id = _source_connection_index.get(source_name)
-        if connection_id is None:
-            return False
-        source_row = _source_connections.get(connection_id)
-        if source_row is None:
-            return False
-
-        connected_at = source_row.get("connected_at")
-        if connected_at is None:
-            return False
-
-        last_completed_at = source_row.get("last_completed_at")
-        return last_completed_at is None or last_completed_at < connected_at
-
-
-def _record_stream_event(source_name: str, username: str, repository: str, filename: str, status: str) -> None:
-    global _stream_event_sequence
-
-    event_time = datetime.now(timezone.utc)
-    with _stream_state_lock:
-        connection_id = _source_connection_index.get(source_name)
-        source_row = _source_connections.get(connection_id) if connection_id is not None else None
-        upload_session_id = source_row.get("upload_session_id") if source_row else None
-        stream_game_id = source_row.get("stream_game_id") if source_row else None
-
-        _stream_event_sequence += 1
-        _recent_events.appendleft(
-            {
-                "event_id": _stream_event_sequence,
-                "source_name": source_name,
-                "username": username,
-                "upload_session_id": upload_session_id,
-                "stream_game_id": stream_game_id,
-                "repository": repository,
-                "filename": filename,
-                "status": status,
-                "timestamp": event_time,
-            }
-        )
-
-        if source_row is not None:
-            source_row["updated_at"] = event_time
-            source_row["last_activity_at"] = event_time
-            source_row["stream_phase"] = status
-            if status in {"completed", "ended"}:
-                source_row["last_completed_at"] = event_time
-
-    print(
-        "[FTP][EVENT] "
-        f"source='{source_name}' "
-        f"upload_session_id='{upload_session_id}' "
-        f"stream_game_id='{stream_game_id}' "
-        f"status='{status}' "
-        f"repository='{repository}' "
-        f"filename='{filename}'",
-        flush=True,
-    )
-
-
-def get_stream_status_snapshot(source_names: set[str] | None = None) -> dict[str, list[dict]]:
-    with _stream_state_lock:
-        sources = list(_source_connections.values())
-        events = list(_recent_events)
-
-    if source_names is not None:
-        sources = [source for source in sources if source["source_name"] in source_names]
-        events = [event for event in events if event["source_name"] in source_names]
-
-    # Treat recent completed events as live activity for stream status.
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
-    events = [event for event in events if event["timestamp"] >= cutoff]
-
-    return {
-        "sources": sources,
-        "events": events,
-    }
-
-
-def get_stream_events_since(last_event_id: int, source_names: set[str] | None = None) -> list[dict]:
-    with _stream_state_lock:
-        events = list(_recent_events)
-
-    if source_names is not None:
-        events = [event for event in events if event.get("source_name") in source_names]
-
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
-    events = [event for event in events if event.get("timestamp") and event["timestamp"] >= cutoff]
-
-    filtered = [event for event in events if int(event.get("event_id", 0)) > last_event_id]
-    filtered.sort(key=lambda event: int(event.get("event_id", 0)))
-    return filtered
-
-
 def _authenticate_ftp_credentials(
     username: str,
     token_value: str,
@@ -1615,9 +1214,6 @@ def _parse_passive_ports(raw: str) -> range | None:
 
 
 def start_ftp_server() -> None:
-    if not settings.FTP_ENABLED:
-        return
-
     global _server, _server_thread
 
     with _server_lock:
