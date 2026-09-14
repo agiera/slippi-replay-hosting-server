@@ -94,7 +94,12 @@ class SourceTokenAuthorizer(DummyAuthorizer):
         self._lock = threading.Lock()
 
     def validate_authentication(self, username: str, password: str, handler) -> None:
-        context = _authenticate_ftp_credentials(username=username, token_value=password)
+        try:
+            context = _authenticate_ftp_credentials(username=username, token_value=password)
+        except AuthenticationFailed as exc:
+            remote_ip = getattr(handler, "remote_ip", "?")
+            print(f"[FTP][ERROR] Login failed user='{username}' ip={remote_ip}: {exc}", flush=True)
+            raise
 
         session_home = _prepare_session_home(
             username=username,
@@ -139,8 +144,10 @@ class ReplayFTPHandler(FTPHandler):
     _session_started_event_emitted: bool = False
     _session_seen_stor_file_keys: set[str] = set()
     _session_upload_context_by_file_key: dict[str, tuple[str | None, datetime | None]] = {}
+    _session_stor_started_monotonic: dict[str, float] = {}
     _pending_metadata_by_replay_name: dict[str, dict] = {}
     _partial_parse_stop: threading.Event | None = None
+    _partial_parse_resolved: threading.Event | None = None
 
     def _trace_scope(self) -> str:
         if self.ftp_session is None:
@@ -183,6 +190,7 @@ class ReplayFTPHandler(FTPHandler):
         self._session_started_event_emitted = False
         self._session_seen_stor_file_keys = set()
         self._session_upload_context_by_file_key = {}
+        self._session_stor_started_monotonic = {}
         self._pending_metadata_by_replay_name = {}
         self.ftp_session.upload_session_id = _set_source_connection_state(
             context.source_name,
@@ -209,6 +217,7 @@ class ReplayFTPHandler(FTPHandler):
         stor_file_key = self._session_file_key(file)
         if stor_file_key:
             self._session_seen_stor_file_keys.add(stor_file_key)
+            self._session_stor_started_monotonic[stor_file_key] = time.monotonic()
         if not self._is_metadata_sidecar_filename(file):
             self._session_replay_transfer_attempted = True
             if self.ftp_session is not None and not self._session_started_event_emitted:
@@ -263,11 +272,14 @@ class ReplayFTPHandler(FTPHandler):
 
     def _start_live_partial_parse(self, staged_path: Path, source_name: str) -> None:
         stop_event = threading.Event()
+        resolved_event = threading.Event()
         self._stop_live_partial_parse()
         self._partial_parse_stop = stop_event
+        self._partial_parse_resolved = resolved_event
         worker = threading.Thread(
             target=_live_partial_parse_worker,
             args=(staged_path, source_name, stop_event),
+            kwargs={"resolved_event": resolved_event},
             daemon=True,
         )
         worker.start()
@@ -341,6 +353,29 @@ class ReplayFTPHandler(FTPHandler):
             replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
             self._session_replay_transfer_attempted = True
 
+            transfer_seconds = None
+            if file_key and file_key in self._session_stor_started_monotonic:
+                transfer_seconds = time.monotonic() - self._session_stor_started_monotonic[file_key]
+            live_preview_shown = self._partial_parse_resolved.is_set() if self._partial_parse_resolved else False
+            rate_kbs = (len(data) / 1024 / transfer_seconds) if transfer_seconds else 0.0
+            print(
+                f"[FTP][UPLOAD] Received replay '{original_name}' {self._trace_scope()} "
+                f"bytes={len(data)} transfer_s={transfer_seconds:.1f} rate_kbs={rate_kbs:.0f} live_preview={live_preview_shown}"
+                if transfer_seconds is not None
+                else f"[FTP][UPLOAD] Received replay '{original_name}' {self._trace_scope()} bytes={len(data)} transfer_s=? live_preview={live_preview_shown}",
+                flush=True,
+            )
+            if not live_preview_shown:
+                # Short transfer + no live preview = the client sent the whole file
+                # at game end instead of streaming it.
+                print(
+                    f"[FTP][WARN] Replay '{original_name}' from {self._trace_scope()} completed without a live preview"
+                    f" (transfer_s={transfer_seconds:.1f} — likely a post-game bulk upload)"
+                    if transfer_seconds is not None
+                    else f"[FTP][WARN] Replay '{original_name}' from {self._trace_scope()} completed without a live preview",
+                    flush=True,
+                )
+
             stream_game_id = None
             upload_started_at = None
             if file_key:
@@ -397,6 +432,7 @@ class ReplayFTPHandler(FTPHandler):
             if file_key:
                 self._session_seen_stor_file_keys.discard(file_key)
                 self._session_upload_context_by_file_key.pop(file_key, None)
+                self._session_stor_started_monotonic.pop(file_key, None)
             if self.ftp_session is not None and not self._is_metadata_sidecar_filename(staged_path.name):
                 _set_source_active_staged_file(self.ftp_session.source_name, None)
             try:
@@ -553,6 +589,19 @@ class ReplayFTPHandler(FTPHandler):
         if file_key and file_key not in self._session_seen_stor_file_keys:
             print(f"[FTP][TRACE] Ignoring incomplete callback for untracked file '{Path(file).name}'", flush=True)
             return
+        staged_bytes = 0
+        try:
+            staged_bytes = Path(file).stat().st_size
+        except OSError:
+            pass
+        transfer_seconds = None
+        if file_key and file_key in self._session_stor_started_monotonic:
+            transfer_seconds = time.monotonic() - self._session_stor_started_monotonic[file_key]
+        print(
+            f"[FTP][ERROR] Incomplete upload file='{Path(file).name}' {self._trace_scope()} "
+            f"bytes_staged={staged_bytes} transfer_s={f'{transfer_seconds:.1f}' if transfer_seconds is not None else '?'}",
+            flush=True,
+        )
         if not self._is_metadata_sidecar_filename(Path(file).name):
             self._session_replay_transfer_attempted = True
             if self.ftp_session is not None:
@@ -573,10 +622,18 @@ class ReplayFTPHandler(FTPHandler):
             if file_key:
                 self._session_seen_stor_file_keys.discard(file_key)
                 self._session_upload_context_by_file_key.pop(file_key, None)
+                self._session_stor_started_monotonic.pop(file_key, None)
 
     def on_disconnect(self) -> None:
         self._stop_live_partial_parse()
         if self.ftp_session is not None:
+            if self._session_seen_stor_file_keys:
+                # STOR started but neither completion nor incomplete callback fired.
+                print(
+                    f"[FTP][ERROR] Disconnect with in-flight uploads {self._trace_scope()} "
+                    f"pending_files={sorted(self._session_seen_stor_file_keys)}",
+                    flush=True,
+                )
             print(
                 f"[FTP][TRACE] Disconnect {self._trace_scope()} transfer_attempted={self._session_transfer_attempted}",
                 flush=True,
@@ -1003,7 +1060,12 @@ def get_source_live_replay_path(source_name: str) -> Path | None:
         return None
 
 
-def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: threading.Event) -> None:
+def _live_partial_parse_worker(
+    staged_path: Path,
+    source_name: str,
+    stop_event: threading.Event,
+    resolved_event: threading.Event | None = None,
+) -> None:
     """Poll a live, still-uploading SLP file and feed its start block into the preview.
 
     Runs in a daemon thread while the replay streams in. The Game Start block sits at
@@ -1065,6 +1127,8 @@ def _live_partial_parse_worker(staged_path: Path, source_name: str, stop_event: 
                     flush=True,
                 )
                 _set_source_player_preview(source_name, parsed.players, stage=parsed.stage)
+                if resolved_event is not None:
+                    resolved_event.set()
                 return
 
             now_monotonic = time.monotonic()
