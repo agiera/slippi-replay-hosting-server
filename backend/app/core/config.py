@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     START_GG_TOKEN: str = ""
     PARRY_GG_TOKEN: str = ""
     REPLAY_STORAGE_DIR: str = "/app/uploads"
+    # Streams the client cut off before the SLP footer are kept here, out of the
+    # library, for forensics.
+    REPLAY_TRUNCATED_DIR: str = "/app/uploads/truncated"
     REPLAY_VIEW_CACHE_DIR: str = "/tmp/slippi-replay-view-cache"
     REPLAY_VIEW_ARCHIVE_DIR: str = "/app/uploads-view-archive"
     REPLAY_VIEW_CACHE_TTL_SECONDS: int = 86400

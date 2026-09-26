@@ -11,7 +11,9 @@ from app.models.source_metadata import SourceMetadata
 from app.models.user import User
 from app.services.ftp_server import (
     FTPSessionContext,
+    ReplayFTPHandler,
     SourceTokenAuthorizer,
+    TruncatedStreamError,
     _record_stream_event,
     _prepare_session_home,
     _set_source_connection_state,
@@ -24,6 +26,7 @@ from app.services.ftp_server import (
     get_stream_events_since,
     _is_parsed_slippi_filename,
     _load_source_metadata_override,
+    _quarantine_truncated_stream,
     _source_connection_index,
     _source_connections,
     _stream_state_lock,
@@ -54,6 +57,120 @@ def test_finalize_streamed_slp_raw_length():
     assert finalized[11:15] == len(raw).to_bytes(4, "big")
     assert finalized[:11] == header[:11]
     assert finalized[15:] == raw + footer
+
+
+def test_finalize_streamed_slp_raw_length_flags_missing_footer_as_truncated():
+    header = b"{U\x03raw[$U#l\x00\x00\x00\x00"
+    # A stream cut off mid-game: raw events but no metadata footer.
+    with pytest.raises(TruncatedStreamError):
+        _finalize_streamed_slp_raw_length(header + b"\x35\x1c\x36\x02" * 100)
+
+
+def test_quarantine_truncated_stream_writes_outside_the_library(monkeypatch, tmp_path):
+    from app.services import ftp_server
+
+    monkeypatch.setattr(ftp_server.settings, "REPLAY_TRUNCATED_DIR", str(tmp_path / "truncated"))
+    payload = b"{U\x03raw[$U#l\x00\x00\x00\x00partial"
+
+    saved = _quarantine_truncated_stream(source_name="NGPR/WII 07", original_name="Game_x.slp", data=payload)
+
+    assert saved is not None
+    assert saved.parent == tmp_path / "truncated" / "NGPR_WII_07"
+    assert saved.name.endswith("_Game_x.slp")
+    assert saved.read_bytes() == payload
+
+
+def test_finalize_received_replay_quarantines_truncated_stream_and_marks_failed(monkeypatch, tmp_path, capsys):
+    from app.services import ftp_server
+
+    monkeypatch.setattr(ftp_server.settings, "REPLAY_TRUNCATED_DIR", str(tmp_path / "truncated"))
+    persisted = []
+    monkeypatch.setattr(ReplayFTPHandler, "_persist_replay_and_record", lambda self, **kw: persisted.append(kw))
+
+    _reset_stream_state()
+    source_name = "truncated-source"
+    handler = ReplayFTPHandler.__new__(ReplayFTPHandler)
+    handler.ftp_session = FTPSessionContext(
+        user_id=1,
+        token_id=1,
+        username="ftpuser",
+        source_name=source_name,
+        repositories={"public"},
+        repository_name="public",
+        session_home=str(tmp_path),
+    )
+    handler.ftp_session.upload_session_id = _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
+
+    handler._finalize_received_replay(
+        original_name="Game_cut.slp",
+        data=b"{U\x03raw[$U#l\x00\x00\x00\x00" + b"\x35" * 64,
+        replay_metadata_override=None,
+        stream_game_id=None,
+        upload_started_at=None,
+    )
+
+    assert persisted == []
+    quarantined = list((tmp_path / "truncated" / source_name).iterdir())
+    assert len(quarantined) == 1 and quarantined[0].name.endswith("_Game_cut.slp")
+    assert _get_source_state(source_name)["stream_phase"] == "failed"
+    out = capsys.readouterr().out
+    assert "[FTP][WARN] Truncated stream 'Game_cut.slp'" in out
+    assert "Failed to finalize" not in out
+
+
+def test_disconnected_connections_are_pruned_after_retention_window():
+    from datetime import datetime, timedelta, timezone
+
+    from app.services import ftp_server
+    from app.services.ftp_server import get_stream_status_snapshot
+
+    _reset_stream_state()
+    # One Wii login per game: each connect+disconnect used to leave a row behind forever.
+    stale_ids = []
+    for _ in range(3):
+        sid = _set_source_connection_state("wii-a", "ftpuser", {"public"}, connected=True)
+        _set_source_connection_state("wii-a", "ftpuser", {"public"}, connected=False)
+        stale_ids.append(sid)
+
+    # Still inside the retention window -> kept so the UI can show the finished game.
+    assert set(stale_ids) <= set(_source_connections)
+    assert len(get_stream_status_snapshot()["sources"]) == 3
+
+    old = datetime.now(timezone.utc) - ftp_server._DISCONNECTED_CONNECTION_RETENTION - timedelta(seconds=1)
+    with _stream_state_lock:
+        for sid in stale_ids[:2]:
+            _source_connections[sid]["last_activity_at"] = old
+            _source_connections[sid]["updated_at"] = old
+
+    live_id = _set_source_connection_state("wii-b", "ftpuser", {"public"}, connected=True)
+
+    remaining = set(_source_connections)
+    assert live_id in remaining
+    assert stale_ids[2] in remaining
+    assert not (set(stale_ids[:2]) & remaining)
+    assert {row["upload_session_id"] for row in get_stream_status_snapshot()["sources"]} == remaining
+
+
+def test_snapshot_never_prunes_a_connected_row_even_if_idle():
+    from datetime import datetime, timedelta, timezone
+
+    from app.services import ftp_server
+    from app.services.ftp_server import get_stream_status_snapshot
+
+    _reset_stream_state()
+    live_id = _set_source_connection_state("wii-idle", "ftpuser", {"public"}, connected=True)
+    assert live_id is not None
+    old = datetime.now(timezone.utc) - ftp_server._DISCONNECTED_CONNECTION_RETENTION * 4
+    with _stream_state_lock:
+        _source_connections[live_id]["last_activity_at"] = old
+        _source_connections[live_id]["updated_at"] = old
+
+    snapshot = get_stream_status_snapshot()
+
+    assert [row["upload_session_id"] for row in snapshot["sources"]] == [live_id]
+    # Snapshot rows are copies; mutating them must not leak back into shared state.
+    snapshot["sources"][0]["stream_phase"] = "mutated"
+    assert _get_source_state("wii-idle")["stream_phase"] == "started"
 
 
 def test_finalize_streamed_slp_raw_length_preserves_finalized_replay():

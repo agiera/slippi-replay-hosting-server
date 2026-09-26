@@ -875,6 +875,14 @@ def list_stream_tournaments(db: Session = Depends(get_db)) -> list[TournamentSer
     return [TournamentSeriesPublic.model_validate(tournament) for tournament in tournaments]
 
 
+def _encode_stream_sources(source_names: set[str] | None) -> tuple[dict, list, str]:
+    """Snapshot + JSON-encode the live sources; CPU-bound, run off the event loop."""
+    snapshot = get_stream_status_snapshot(source_names)
+    sources = jsonable_encoder(snapshot["sources"])
+    signature = json.dumps(sources, separators=(",", ":"), sort_keys=True)
+    return snapshot, sources, signature
+
+
 @router.get("/stream/events")
 async def stream_events(
     request: Request,
@@ -891,19 +899,21 @@ async def stream_events(
 
             return StreamingResponse(empty_stream(), media_type="text/event-stream")
         source_names = {token.source_name for token in tournament.sources}
+    tournament_payload = TournamentSeriesPublic.model_validate(tournament).model_dump() if tournament else None
+    # Don't hold a pooled DB connection for the lifetime of the SSE stream.
+    db.close()
 
     try:
         cursor = int(request.headers.get("last-event-id", "0") or "0")
     except ValueError:
         cursor = 0
 
-    snapshot = get_stream_status_snapshot(source_names)
+    snapshot, encoded_sources, sources_signature = await asyncio.to_thread(_encode_stream_sources, source_names)
     payload = {
-        "tournament": TournamentSeriesPublic.model_validate(tournament).model_dump() if tournament else None,
-        "sources": jsonable_encoder(snapshot["sources"]),
+        "tournament": tournament_payload,
+        "sources": encoded_sources,
         "events": jsonable_encoder(snapshot["events"]),
     }
-    sources_signature = json.dumps(payload["sources"], separators=(",", ":"), sort_keys=True)
 
     max_event_id = max((int(event.get("event_id", 0)) for event in snapshot["events"]), default=0)
     cursor = max(cursor, max_event_id)
@@ -928,9 +938,9 @@ async def stream_events(
                 emitted = True
                 yield f"id: {event_id}\nevent: stream_event\ndata: {encoded}\n\n"
 
-            current_snapshot = get_stream_status_snapshot(source_names)
-            current_sources = jsonable_encoder(current_snapshot["sources"])
-            current_sources_signature = json.dumps(current_sources, separators=(",", ":"), sort_keys=True)
+            _snapshot, current_sources, current_sources_signature = await asyncio.to_thread(
+                _encode_stream_sources, source_names
+            )
             if current_sources_signature != sources_signature:
                 sources_signature = current_sources_signature
                 status_payload = {

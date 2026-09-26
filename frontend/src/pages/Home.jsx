@@ -828,6 +828,8 @@ export default function Home() {
   // Read inside the long-lived SSE handler, so keep the latest values in refs.
   const autoFollowSourceRef = useRef("");
   const lastMirroredStreamGameIdRef = useRef("");
+  // loadFirstPage changes with every filter edit; the SSE connection must not.
+  const loadFirstPageRef = useRef(() => {});
 
   const tableRows = useMemo(
     () => mergeReplayRows({
@@ -924,28 +926,38 @@ export default function Home() {
   }, [debouncedFilters]);
 
   useEffect(() => {
+    loadFirstPageRef.current = loadFirstPage;
+  }, [loadFirstPage]);
+
+  useEffect(() => {
     let active = true;
+
+    async function refreshStreamStatus() {
+      try {
+        const statusPayload = await fetchStreamStatus();
+        if (!active) {
+          return;
+        }
+        setStreamStatus((prev) => applySnapshotOrStatusFrame(prev, statusPayload));
+      } catch {
+        // Keep the existing SSE-driven state when status fetch fails.
+      }
+    }
 
     const streamStatusRefreshScheduler = createStreamStatusRefreshScheduler({
       delayMs: 250,
-      onRefresh: async () => {
-        try {
-          const statusPayload = await fetchStreamStatus();
-          if (!active) {
-            return;
-          }
-          setStreamStatus((prev) => applySnapshotOrStatusFrame(prev, statusPayload));
-        } catch {
-          // Keep the existing SSE-driven state when status fetch fails.
-        }
-      },
+      onRefresh: refreshStreamStatus,
     });
+
+    // Paint live rows from REST right away instead of waiting on the first SSE
+    // snapshot frame, which can lag behind a proxy/loaded backend.
+    void refreshStreamStatus();
 
     function maybeRefreshReplayList(events) {
       const refresh = shouldRefreshReplayList(events, latestCompletedEventMsRef.current);
       if (refresh.shouldRefresh) {
         latestCompletedEventMsRef.current = refresh.newestMs;
-        void loadFirstPage();
+        void loadFirstPageRef.current();
       }
     }
 
@@ -1031,7 +1043,7 @@ export default function Home() {
       streamStatusRefreshScheduler.cancel();
       stream.close();
     };
-  }, [loadFirstPage]);
+  }, []);
 
   useEffect(() => {
     const timerId = setInterval(() => {

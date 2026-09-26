@@ -35,6 +35,10 @@ _STREAMED_SLP_HEADER = b"{U\x03raw[$U#l\x00\x00\x00\x00"
 _SLP_METADATA_FOOTER_PREFIX = b"U\x08metadata{U\x07startAtSU"
 
 
+class TruncatedStreamError(ValueError):
+    """The client closed the data connection before sending the SLP footer."""
+
+
 def _finalize_streamed_slp_raw_length(data: bytes) -> bytes:
     """Backfill the raw byte count left blank by sequential Wii FTP uploads."""
     if not data.startswith(_STREAMED_SLP_HEADER):
@@ -42,7 +46,7 @@ def _finalize_streamed_slp_raw_length(data: bytes) -> bytes:
 
     footer_offset = data.rfind(_SLP_METADATA_FOOTER_PREFIX)
     if footer_offset < len(_STREAMED_SLP_HEADER):
-        raise ValueError("streamed SLP is missing its metadata footer")
+        raise TruncatedStreamError("streamed SLP is missing its metadata footer")
 
     raw_length = footer_offset - len(_STREAMED_SLP_HEADER)
     if raw_length > 0x7FFFFFFF:
@@ -458,6 +462,27 @@ class ReplayFTPHandler(FTPHandler):
                 replay_metadata_override=replay_metadata_override,
                 stream_game_id=stream_game_id,
                 upload_started_at=upload_started_at,
+            )
+        except TruncatedStreamError as exc:
+            # The client cut the stream mid-game (usually a Wi-Fi stall). Keep the
+            # bytes for forensics; a fixed client re-uploads the full file itself.
+            saved_to = _quarantine_truncated_stream(
+                source_name=self.ftp_session.source_name if self.ftp_session else "unknown",
+                original_name=original_name,
+                data=data,
+            )
+            if self.ftp_session is not None:
+                _record_stream_event(
+                    source_name=self.ftp_session.source_name,
+                    username=self.ftp_session.username,
+                    repository=self.ftp_session.repository_name,
+                    filename=original_name,
+                    status="failed",
+                )
+            print(
+                f"[FTP][WARN] Truncated stream '{original_name}' {self._trace_scope()} "
+                f"bytes={len(data)} saved_to='{saved_to}': {exc}",
+                flush=True,
             )
         except Exception as exc:
             if self.ftp_session is not None:
@@ -956,6 +981,24 @@ _source_connections: dict[str, dict] = {}
 _source_connection_index: dict[str, str] = {}
 _recent_events: deque[dict] = deque(maxlen=500)
 _stream_event_sequence: int = 0
+# Disconnected rows linger so the UI can still render the finished game, then
+# are dropped; without this the dict grows by one entry per Wii login forever.
+_DISCONNECTED_CONNECTION_RETENTION = timedelta(minutes=15)
+
+
+def _prune_stale_connections_locked(now: datetime) -> None:
+    """Caller must hold _stream_state_lock."""
+    live_ids = set(_source_connection_index.values())
+    cutoff = now - _DISCONNECTED_CONNECTION_RETENTION
+    stale_ids = [
+        connection_id
+        for connection_id, row in _source_connections.items()
+        if connection_id not in live_ids
+        and not row.get("connected")
+        and (row.get("last_activity_at") or row.get("updated_at") or now) < cutoff
+    ]
+    for connection_id in stale_ids:
+        _source_connections.pop(connection_id, None)
 
 
 def _latest_source_connection_id(source_name: str) -> str | None:
@@ -975,8 +1018,25 @@ def _is_parsed_slippi_filename(filename: str | None) -> bool:
     return str(filename or "").lower().endswith(".peppi.json.gz")
 
 
+def _quarantine_truncated_stream(*, source_name: str, original_name: str, data: bytes) -> Path | None:
+    safe_source = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in source_name) or "unknown"
+    safe_name = Path(original_name).name or "replay.slp"
+    target_dir = Path(settings.REPLAY_TRUNCATED_DIR) / safe_source
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = target_dir / f"{stamp}_{safe_name}"
+        target.write_bytes(data)
+        return target
+    except OSError as exc:
+        print(f"[FTP][ERROR] Could not quarantine truncated stream '{original_name}': {exc}", flush=True)
+        return None
+
+
 def _set_source_connection_state(source_name: str, username: str, repositories: set[str], connected: bool) -> str | None:
     with _stream_state_lock:
+        now = datetime.now(timezone.utc)
+        _prune_stale_connections_locked(now)
         if connected:
             existing_last_completed_at = None
             previous_connection_id = _source_connection_index.get(source_name)
@@ -984,10 +1044,9 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
                 previous = _source_connections.get(previous_connection_id)
                 if previous is not None:
                     previous["connected"] = False
-                    previous["updated_at"] = datetime.now(timezone.utc)
+                    previous["updated_at"] = now
                     existing_last_completed_at = previous.get("last_completed_at")
 
-            now = datetime.now(timezone.utc)
             upload_session_id = str(uuid.uuid4())
             stream_game_id = str(uuid.uuid4())
             # A new connection represents a new game upload; start the live preview
@@ -1022,7 +1081,7 @@ def _set_source_connection_state(source_name: str, username: str, repositories: 
             _source_connection_index.pop(source_name, None)
             return None
         row["connected"] = False
-        row["updated_at"] = datetime.now(timezone.utc)
+        row["updated_at"] = now
         _source_connection_index.pop(source_name, None)
         return row.get("upload_session_id")
 
@@ -1491,8 +1550,11 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
 
 
 def get_stream_status_snapshot(source_names: set[str] | None = None) -> dict[str, list[dict]]:
+    now = datetime.now(timezone.utc)
     with _stream_state_lock:
-        sources = list(_source_connections.values())
+        _prune_stale_connections_locked(now)
+        # Copy rows so serialization outside the lock can't race FTP-thread mutation.
+        sources = [dict(row) for row in _source_connections.values()]
         events = list(_recent_events)
 
     if source_names is not None:
@@ -1500,7 +1562,7 @@ def get_stream_status_snapshot(source_names: set[str] | None = None) -> dict[str
         events = [event for event in events if event["source_name"] in source_names]
 
     # Treat recent completed events as live activity for stream status.
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    cutoff = now - timedelta(minutes=5)
     events = [event for event in events if event["timestamp"] >= cutoff]
 
     return {
