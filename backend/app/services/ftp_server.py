@@ -1,6 +1,7 @@
 import hashlib
 import binascii
 import json
+import logging
 import os
 import shutil
 import threading
@@ -30,6 +31,7 @@ from app.services.peppi_ingest import (
 )
 from app.services.replay_upload import persist_replay_upload
 
+logger = logging.getLogger(__name__)
 
 _STREAMED_SLP_HEADER = b"{U\x03raw[$U#l\x00\x00\x00\x00"
 _SLP_METADATA_FOOTER_PREFIX = b"U\x08metadata{U\x07startAtSU"
@@ -102,7 +104,7 @@ class SourceTokenAuthorizer(DummyAuthorizer):
             context = _authenticate_ftp_credentials(username=username, token_value=password)
         except AuthenticationFailed as exc:
             remote_ip = getattr(handler, "remote_ip", "?")
-            print(f"[FTP][ERROR] Login failed user='{username}' ip={remote_ip}: {exc}", flush=True)
+            logger.error("[FTP][ERROR] Login failed user='%s' ip=%s: %s", username, remote_ip, exc)
             raise
 
         session_home = _prepare_session_home(
@@ -179,7 +181,8 @@ class ReplayFTPHandler(FTPHandler):
 
     def pre_process_command(self, line: str, cmd: str, arg: str) -> None:
         try:
-            print(f"[FTP][TRACE] CMD {cmd} arg='{arg or ''}'", flush=True)
+            shown = "<redacted>" if cmd.upper() == "PASS" else (arg or "")
+            logger.debug("[FTP][TRACE] CMD %s arg='%s'", cmd, shown)
         except Exception:
             pass
         super().pre_process_command(line, cmd, arg)
@@ -202,18 +205,18 @@ class ReplayFTPHandler(FTPHandler):
             context.repositories,
             connected=True,
         )
-        print(
-            f"[FTP][TRACE] Login {self._trace_scope()} user='{context.username}' repos={sorted(context.repositories)} session_home='{context.session_home}'",
-            flush=True,
+        logger.debug(
+            "[FTP][TRACE] Login %s user='%s' repos=%s session_home='%s'",
+            self._trace_scope(), context.username, sorted(context.repositories), context.session_home,
         )
         super().on_login(username)
 
     def ftp_TYPE(self, line: str) -> None:
-        print(f"[FTP][TRACE] TYPE {line}", flush=True)
+        logger.debug("[FTP][TRACE] TYPE %s", line)
         super().ftp_TYPE(line)
 
     def ftp_PASV(self, line: str) -> None:
-        print("[FTP][TRACE] PASV", flush=True)
+        logger.debug("[FTP][TRACE] PASV")
         super().ftp_PASV(line)
 
     def ftp_STOR(self, file: str, mode: str = "w") -> None:
@@ -249,8 +252,8 @@ class ReplayFTPHandler(FTPHandler):
                 if parent_dir:
                     os.makedirs(parent_dir, exist_ok=True)
         except Exception as exc:
-            print(f"[FTP][TRACE] STOR mkdir failed for '{file}': {exc}", flush=True)
-        print(f"[FTP][TRACE] STOR file='{file}' mode='{mode}'", flush=True)
+            logger.debug("[FTP][TRACE] STOR mkdir failed for '%s': %s", file, exc)
+        logger.debug("[FTP][TRACE] STOR file='%s' mode='%s'", file, mode)
         # For a live replay upload, parse the partial SLP as it streams in so the
         # live row shows the same players + stage the finished row will (the
         # controller sidecar alone lacks CPUs, characters and stage).
@@ -267,9 +270,10 @@ class ReplayFTPHandler(FTPHandler):
                     stor_file_key,
                     (None, None),
                 )
-                print(
-                    f"[FTP][TRACE] Bound STOR {self._trace_upload_scope(file_key=stor_file_key, stream_game_id=captured_stream_game_id)} upload_started_at='{captured_started_at}'",
-                    flush=True,
+                logger.debug(
+                    "[FTP][TRACE] Bound STOR %s upload_started_at='%s'",
+                    self._trace_upload_scope(file_key=stor_file_key, stream_game_id=captured_stream_game_id),
+                    captured_started_at,
                 )
             self._start_live_partial_parse(Path(str(file)), self.ftp_session.source_name)
         super().ftp_STOR(file, mode)
@@ -305,10 +309,7 @@ class ReplayFTPHandler(FTPHandler):
             if self.ftp_session is None:
                 return
             if file_key and file_key not in self._session_seen_stor_file_keys:
-                print(
-                    f"[FTP][TRACE] Ignoring completion for untracked file '{staged_path.name}'",
-                    flush=True,
-                )
+                logger.debug("[FTP][TRACE] Ignoring completion for untracked file '%s'", staged_path.name)
                 return
 
             original_name = staged_path.name
@@ -319,8 +320,7 @@ class ReplayFTPHandler(FTPHandler):
                     payload = _decode_uploaded_metadata_sidecar(data)
                     payload = _normalize_metadata_override_payload(payload)
                 except (ValueError, Exception) as exc:
-                    import sys
-                    print(f"[FTP][ERROR] Failed to decode/normalize sidecar '{original_name}': {exc}", file=sys.stderr, flush=True)
+                    logger.error("[FTP][ERROR] Failed to decode/normalize sidecar '%s': %s", original_name, exc)
                     return
                 
                 _log_controller_metadata_payload(
@@ -348,10 +348,7 @@ class ReplayFTPHandler(FTPHandler):
                     filename=original_name,
                     status="controller_metadata",
                 )
-                print(
-                    f"[FTP] Applied metadata sidecar '{original_name}' for replay '{replay_name}'",
-                    flush=True,
-                )
+                logger.info("[FTP] Applied metadata sidecar '%s' for replay '%s'", original_name, replay_name)
                 return
 
             replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
@@ -362,22 +359,18 @@ class ReplayFTPHandler(FTPHandler):
                 transfer_seconds = time.monotonic() - self._session_stor_started_monotonic[file_key]
             live_preview_shown = self._partial_parse_resolved.is_set() if self._partial_parse_resolved else False
             rate_kbs = (len(data) / 1024 / transfer_seconds) if transfer_seconds else 0.0
-            print(
-                f"[FTP][UPLOAD] Received replay '{original_name}' {self._trace_scope()} "
-                f"bytes={len(data)} transfer_s={transfer_seconds:.1f} rate_kbs={rate_kbs:.0f} live_preview={live_preview_shown}"
-                if transfer_seconds is not None
-                else f"[FTP][UPLOAD] Received replay '{original_name}' {self._trace_scope()} bytes={len(data)} transfer_s=? live_preview={live_preview_shown}",
-                flush=True,
+            transfer_s_text = f"{transfer_seconds:.1f}" if transfer_seconds is not None else "?"
+            logger.info(
+                "[FTP][UPLOAD] Received replay '%s' %s bytes=%d transfer_s=%s rate_kbs=%.0f live_preview=%s",
+                original_name, self._trace_scope(), len(data), transfer_s_text, rate_kbs, live_preview_shown,
             )
             if not live_preview_shown:
                 # Short transfer + no live preview = the client sent the whole file
                 # at game end instead of streaming it.
-                print(
-                    f"[FTP][WARN] Replay '{original_name}' from {self._trace_scope()} completed without a live preview"
-                    f" (transfer_s={transfer_seconds:.1f} — likely a post-game bulk upload)"
-                    if transfer_seconds is not None
-                    else f"[FTP][WARN] Replay '{original_name}' from {self._trace_scope()} completed without a live preview",
-                    flush=True,
+                suffix = f" (transfer_s={transfer_seconds:.1f} — likely a post-game bulk upload)" if transfer_seconds is not None else ""
+                logger.warning(
+                    "[FTP][WARN] Replay '%s' from %s completed without a live preview%s",
+                    original_name, self._trace_scope(), suffix,
                 )
 
             stream_game_id = None
@@ -393,9 +386,11 @@ class ReplayFTPHandler(FTPHandler):
                     if source_state is not None:
                         stream_game_id = source_state.get("stream_game_id")
                         upload_started_at = source_state.get("active_upload_started_at")
-            print(
-                f"[FTP][TRACE] Finalizing file='{original_name}' {self._trace_upload_scope(file_key=file_key, stream_game_id=stream_game_id)} captured_upload_started_at='{upload_started_at}'",
-                flush=True,
+            logger.debug(
+                "[FTP][TRACE] Finalizing file='%s' %s captured_upload_started_at='%s'",
+                original_name,
+                self._trace_upload_scope(file_key=file_key, stream_game_id=stream_game_id),
+                upload_started_at,
             )
 
             # Mark the upload completed now so a fast QUIT is not misread as an
@@ -431,7 +426,7 @@ class ReplayFTPHandler(FTPHandler):
                     filename=staged_path.name,
                     status="failed",
                 )
-            print(f"[FTP] Failed to ingest uploaded file '{staged_path}': {exc}", flush=True)
+            logger.error("[FTP] Failed to ingest uploaded file '%s': %s", staged_path, exc)
         finally:
             if file_key:
                 self._session_seen_stor_file_keys.discard(file_key)
@@ -479,10 +474,9 @@ class ReplayFTPHandler(FTPHandler):
                     filename=original_name,
                     status="failed",
                 )
-            print(
-                f"[FTP][WARN] Truncated stream '{original_name}' {self._trace_scope()} "
-                f"bytes={len(data)} saved_to='{saved_to}': {exc}",
-                flush=True,
+            logger.warning(
+                "[FTP][WARN] Truncated stream '%s' %s bytes=%d saved_to='%s': %s",
+                original_name, self._trace_scope(), len(data), saved_to, exc,
             )
         except Exception as exc:
             if self.ftp_session is not None:
@@ -493,11 +487,10 @@ class ReplayFTPHandler(FTPHandler):
                     filename=original_name,
                     status="failed",
                 )
-            print(f"[FTP] Failed to finalize uploaded file '{original_name}': {exc}", flush=True)
+            logger.error("[FTP] Failed to finalize uploaded file '%s': %s", original_name, exc)
         finally:
-            print(
-                f"[FTP][TRACE] Off-loop finalization for '{original_name}' took {time.monotonic() - started:.2f}s",
-                flush=True,
+            logger.debug(
+                "[FTP][TRACE] Off-loop finalization for '%s' took %.2fs", original_name, time.monotonic() - started,
             )
 
     def _persist_replay_and_record(
@@ -537,14 +530,18 @@ class ReplayFTPHandler(FTPHandler):
                     stream_game_id = source_state.get("stream_game_id")
                 if upload_started_at is None:
                     upload_started_at = source_state.get("active_upload_started_at")
-            print(
-                f"[FTP][TRACE] Fallback stream context for replay '{original_name}': {self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id)} upload_started_at='{upload_started_at}'",
-                flush=True,
+            logger.debug(
+                "[FTP][TRACE] Fallback stream context for replay '%s': %s upload_started_at='%s'",
+                original_name,
+                self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id),
+                upload_started_at,
             )
         else:
-            print(
-                f"[FTP][TRACE] Using captured stream context for replay '{original_name}': {self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id)} upload_started_at='{upload_started_at}'",
-                flush=True,
+            logger.debug(
+                "[FTP][TRACE] Using captured stream context for replay '%s': %s upload_started_at='%s'",
+                original_name,
+                self._trace_upload_scope(file_key=original_name, stream_game_id=stream_game_id),
+                upload_started_at,
             )
 
         with SessionLocal() as db:
@@ -605,14 +602,14 @@ class ReplayFTPHandler(FTPHandler):
                 status="pending_parse",
             )
 
-        print(f"[FTP] Uploaded {original_name} to repository '{repository_name}'", flush=True)
+        logger.info("[FTP] Uploaded %s to repository '%s'", original_name, repository_name)
 
     def on_incomplete_file_received(self, file: str) -> None:
         self._stop_live_partial_parse()
         self._session_transfer_attempted = True
         file_key = self._session_file_key(file)
         if file_key and file_key not in self._session_seen_stor_file_keys:
-            print(f"[FTP][TRACE] Ignoring incomplete callback for untracked file '{Path(file).name}'", flush=True)
+            logger.debug("[FTP][TRACE] Ignoring incomplete callback for untracked file '%s'", Path(file).name)
             return
         staged_bytes = 0
         try:
@@ -622,10 +619,10 @@ class ReplayFTPHandler(FTPHandler):
         transfer_seconds = None
         if file_key and file_key in self._session_stor_started_monotonic:
             transfer_seconds = time.monotonic() - self._session_stor_started_monotonic[file_key]
-        print(
-            f"[FTP][ERROR] Incomplete upload file='{Path(file).name}' {self._trace_scope()} "
-            f"bytes_staged={staged_bytes} transfer_s={f'{transfer_seconds:.1f}' if transfer_seconds is not None else '?'}",
-            flush=True,
+        transfer_s_text = f"{transfer_seconds:.1f}" if transfer_seconds is not None else "?"
+        logger.error(
+            "[FTP][ERROR] Incomplete upload file='%s' %s bytes_staged=%d transfer_s=%s",
+            Path(file).name, self._trace_scope(), staged_bytes, transfer_s_text,
         )
         if not self._is_metadata_sidecar_filename(Path(file).name):
             self._session_replay_transfer_attempted = True
@@ -654,14 +651,12 @@ class ReplayFTPHandler(FTPHandler):
         if self.ftp_session is not None:
             if self._session_seen_stor_file_keys:
                 # STOR started but neither completion nor incomplete callback fired.
-                print(
-                    f"[FTP][ERROR] Disconnect with in-flight uploads {self._trace_scope()} "
-                    f"pending_files={sorted(self._session_seen_stor_file_keys)}",
-                    flush=True,
+                logger.error(
+                    "[FTP][ERROR] Disconnect with in-flight uploads %s pending_files=%s",
+                    self._trace_scope(), sorted(self._session_seen_stor_file_keys),
                 )
-            print(
-                f"[FTP][TRACE] Disconnect {self._trace_scope()} transfer_attempted={self._session_transfer_attempted}",
-                flush=True,
+            logger.debug(
+                "[FTP][TRACE] Disconnect %s transfer_attempted=%s", self._trace_scope(), self._session_transfer_attempted,
             )
             if self._session_replay_transfer_attempted and _session_started_without_completion(self.ftp_session.source_name):
                 _record_stream_event(
@@ -671,9 +666,9 @@ class ReplayFTPHandler(FTPHandler):
                     filename="",
                     status="abandoned",
                 )
-                print(
-                    f"[FTP][ERROR] Stream session for source '{self.ftp_session.source_name}' disconnected without any completed uploads",
-                    flush=True,
+                logger.error(
+                    "[FTP][ERROR] Stream session for source '%s' disconnected without any completed uploads",
+                    self.ftp_session.source_name,
                 )
             _set_source_connection_state(
                 self.ftp_session.source_name,
@@ -848,7 +843,6 @@ def _log_controller_metadata_payload(
     source_name: str | None = None,
     filename: str | None = None,
 ) -> None:
-    import sys
     players = payload.get("players") if isinstance(payload, dict) else None
     player_lines: list[str] = []
 
@@ -872,15 +866,12 @@ def _log_controller_metadata_payload(
     if filename:
         context_parts.append(f"filename={filename}")
 
-    print(
-        f"[FTP][META] {' '.join(context_parts)} stage={stage} players={len(player_lines)}",
-        file=sys.stderr,
-        flush=True,
-    )
-    raw_payload = json.dumps(payload, indent=2, sort_keys=True)
-    print(f"[FTP][META][RAW] {raw_payload}", file=sys.stderr, flush=True)
-    for line in player_lines:
-        print(f"[FTP][META]   {line}", file=sys.stderr, flush=True)
+    logger.debug("[FTP][META] %s stage=%s players=%d", " ".join(context_parts), stage, len(player_lines))
+    if logger.isEnabledFor(logging.DEBUG):
+        raw_payload = json.dumps(payload, indent=2, sort_keys=True)
+        logger.debug("[FTP][META][RAW] %s", raw_payload)
+        for line in player_lines:
+            logger.debug("[FTP][META]   %s", line)
 
 
 def _normalize_ubjson_player_fields(player_meta: dict) -> dict:
@@ -1029,7 +1020,7 @@ def _quarantine_truncated_stream(*, source_name: str, original_name: str, data: 
         target.write_bytes(data)
         return target
     except OSError as exc:
-        print(f"[FTP][ERROR] Could not quarantine truncated stream '{original_name}': {exc}", flush=True)
+        logger.error("[FTP][ERROR] Could not quarantine truncated stream '%s': %s", original_name, exc)
         return None
 
 
@@ -1145,9 +1136,9 @@ def _live_partial_parse_worker(
         if stop_event.is_set():
             if parse_attempt_count == 0:
                 elapsed = time.monotonic() - started_monotonic
-                print(
-                    f"[FTP][TRACE] Live partial parse stopped before first attempt source='{source_name}' file='{staged_path.name}' empty_reads={empty_read_count} elapsed_s={elapsed:.2f}",
-                    flush=True,
+                logger.debug(
+                    "[FTP][TRACE] Live partial parse stopped before first attempt source='%s' file='%s' empty_reads=%d elapsed_s=%.2f",
+                    source_name, staged_path.name, empty_read_count, elapsed,
                 )
             return
         try:
@@ -1160,9 +1151,9 @@ def _live_partial_parse_worker(
             now_monotonic = time.monotonic()
             if now_monotonic - last_trace_monotonic >= 10:
                 elapsed = now_monotonic - started_monotonic
-                print(
-                    f"[FTP][TRACE] Live partial parse waiting for bytes source='{source_name}' file='{staged_path.name}' empty_reads={empty_read_count} attempts={parse_attempt_count} elapsed_s={elapsed:.2f}",
-                    flush=True,
+                logger.debug(
+                    "[FTP][TRACE] Live partial parse waiting for bytes source='%s' file='%s' empty_reads=%d attempts=%d elapsed_s=%.2f",
+                    source_name, staged_path.name, empty_read_count, parse_attempt_count, elapsed,
                 )
                 last_trace_monotonic = now_monotonic
         else:
@@ -1171,19 +1162,17 @@ def _live_partial_parse_worker(
                 parse_bytes = _patch_streamed_slp_raw_length_for_partial_parse(data)
                 parsed = parse_slippi_start_partial(parse_bytes, suffix=staged_path.suffix or ".slp")
             except Exception as exc:  # defensive: never let the worker crash the thread
-                import sys
-                print(
-                    f"[FTP][ERROR] Live partial parse failed source='{source_name}' file='{staged_path.name}' attempt={parse_attempt_count}: {exc}",
-                    file=sys.stderr,
-                    flush=True,
+                logger.error(
+                    "[FTP][ERROR] Live partial parse failed source='%s' file='%s' attempt=%d: %s",
+                    source_name, staged_path.name, parse_attempt_count, exc,
                 )
                 parsed = None
 
             if parsed is not None and (parsed.players or parsed.stage is not None):
                 elapsed = time.monotonic() - started_monotonic
-                print(
-                    f"[FTP][TRACE] Live partial parse resolved source='{source_name}' file='{staged_path.name}' attempts={parse_attempt_count} bytes={len(data)} stage={parsed.stage} players={len(parsed.players)} elapsed_s={elapsed:.2f}",
-                    flush=True,
+                logger.debug(
+                    "[FTP][TRACE] Live partial parse resolved source='%s' file='%s' attempts=%d bytes=%d stage=%s players=%d elapsed_s=%.2f",
+                    source_name, staged_path.name, parse_attempt_count, len(data), parsed.stage, len(parsed.players), elapsed,
                 )
                 _set_source_player_preview(source_name, parsed.players, stage=parsed.stage)
                 if resolved_event is not None:
@@ -1193,9 +1182,9 @@ def _live_partial_parse_worker(
             now_monotonic = time.monotonic()
             if now_monotonic - last_trace_monotonic >= 10:
                 elapsed = now_monotonic - started_monotonic
-                print(
-                    f"[FTP][TRACE] Live partial parse pending source='{source_name}' file='{staged_path.name}' attempts={parse_attempt_count} bytes={len(data)} elapsed_s={elapsed:.2f}",
-                    flush=True,
+                logger.debug(
+                    "[FTP][TRACE] Live partial parse pending source='%s' file='%s' attempts=%d bytes=%d elapsed_s=%.2f",
+                    source_name, staged_path.name, parse_attempt_count, len(data), elapsed,
                 )
                 last_trace_monotonic = now_monotonic
 
@@ -1537,15 +1526,9 @@ def _record_stream_event(source_name: str, username: str, repository: str, filen
             if status in {"completed", "ended"}:
                 source_row["last_completed_at"] = event_time
 
-    print(
-        "[FTP][EVENT] "
-        f"source='{source_name}' "
-        f"upload_session_id='{upload_session_id}' "
-        f"stream_game_id='{stream_game_id}' "
-        f"status='{status}' "
-        f"repository='{repository}' "
-        f"filename='{filename}'",
-        flush=True,
+    logger.info(
+        "[FTP][EVENT] source='%s' upload_session_id='%s' stream_game_id='%s' status='%s' repository='%s' filename='%s'",
+        source_name, upload_session_id, stream_game_id, status, repository, filename,
     )
 
 
@@ -1689,7 +1672,7 @@ def start_ftp_server() -> None:
         authorizer = SourceTokenAuthorizer()
         handler_cls = ReplayFTPHandler
         handler_cls.authorizer = authorizer
-        print(f"[FTP] Using handler class: {handler_cls.__name__}", flush=True)
+        logger.info("[FTP] Using handler class: %s", handler_cls.__name__)
 
         masquerade_address = settings.FTP_MASQUERADE_ADDRESS.strip()
         if masquerade_address:
@@ -1708,7 +1691,7 @@ def start_ftp_server() -> None:
         _server_thread = threading.Thread(target=_server.serve_forever, kwargs={"timeout": 1.0}, daemon=True)
         _server_thread.start()
 
-    print(f"[FTP] Server listening on {settings.FTP_HOST}:{settings.FTP_PORT}", flush=True)
+    logger.info("[FTP] Server listening on %s:%s", settings.FTP_HOST, settings.FTP_PORT)
 
 
 def stop_ftp_server() -> None:
@@ -1725,4 +1708,4 @@ def stop_ftp_server() -> None:
         _server = None
         _server_thread = None
 
-    print("[FTP] Server stopped", flush=True)
+    logger.info("[FTP] Server stopped")

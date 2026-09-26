@@ -1,13 +1,21 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-app}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    # Only other containers on the compose network need this; keep it off the LAN.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -29,13 +37,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    logging: *default-logging
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
       REPLAY_VIEW_ARCHIVE_DIR: /app/uploads-view-archive
     ports:
-      - "8000:8000"
+      # httpd proxies /api internally; only expose 8000 for local debugging.
+      - "127.0.0.1:8000:8000"
+      # Wiis on the LAN connect to these directly, so they must stay open.
       - "${FTP_PORT:-2121}:${FTP_PORT:-2121}"
       - "${FTP_PASSIVE_PORTS:-22100-22199}:${FTP_PASSIVE_PORTS:-22100-22199}"
     volumes:
@@ -63,14 +74,16 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    logging: *default-logging
     environment:
       FRONTEND_MODE: ${FRONTEND_MODE:-production}
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
       VITE_SLIPPILAB_URL: ${VITE_SLIPPILAB_URL:-http://localhost:${SLIPPILAB_PORT:-4173}}
       VITE_DEV_PROXY_TARGET: ${VITE_DEV_PROXY_TARGET:-http://backend:8000}
       VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-localhost,127.0.0.1}
+    # httpd proxies to this internally; only expose 5173 for local debugging.
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -80,6 +93,7 @@ services:
     depends_on:
       - backend
       - frontend
+    logging: *default-logging
     ports:
       - "${PROXY_PORT:-8080}:80"
     volumes:
@@ -88,10 +102,12 @@ services:
   slippilab:
     image: node:20-alpine
     working_dir: /app
+    logging: *default-logging
     command: >
       sh -c "npm install && npm run dev -- --host 0.0.0.0 --port ${SLIPPILAB_PORT:-4173}"
+    # Not proxied by httpd; only needed for local debugging.
     ports:
-      - "${SLIPPILAB_PORT:-4173}:${SLIPPILAB_PORT:-4173}"
+      - "127.0.0.1:${SLIPPILAB_PORT:-4173}:${SLIPPILAB_PORT:-4173}"
     volumes:
       - ./slippilab:/app
       - /app/node_modules

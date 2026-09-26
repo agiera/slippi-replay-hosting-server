@@ -80,7 +80,7 @@ def test_quarantine_truncated_stream_writes_outside_the_library(monkeypatch, tmp
     assert saved.read_bytes() == payload
 
 
-def test_finalize_received_replay_quarantines_truncated_stream_and_marks_failed(monkeypatch, tmp_path, capsys):
+def test_finalize_received_replay_quarantines_truncated_stream_and_marks_failed(monkeypatch, tmp_path, caplog):
     from app.services import ftp_server
 
     monkeypatch.setattr(ftp_server.settings, "REPLAY_TRUNCATED_DIR", str(tmp_path / "truncated"))
@@ -101,21 +101,21 @@ def test_finalize_received_replay_quarantines_truncated_stream_and_marks_failed(
     )
     handler.ftp_session.upload_session_id = _set_source_connection_state(source_name, "ftpuser", {"public"}, connected=True)
 
-    handler._finalize_received_replay(
-        original_name="Game_cut.slp",
-        data=b"{U\x03raw[$U#l\x00\x00\x00\x00" + b"\x35" * 64,
-        replay_metadata_override=None,
-        stream_game_id=None,
-        upload_started_at=None,
-    )
+    with caplog.at_level("WARNING", logger="app.services.ftp_server"):
+        handler._finalize_received_replay(
+            original_name="Game_cut.slp",
+            data=b"{U\x03raw[$U#l\x00\x00\x00\x00" + b"\x35" * 64,
+            replay_metadata_override=None,
+            stream_game_id=None,
+            upload_started_at=None,
+        )
 
     assert persisted == []
     quarantined = list((tmp_path / "truncated" / source_name).iterdir())
     assert len(quarantined) == 1 and quarantined[0].name.endswith("_Game_cut.slp")
     assert _get_source_state(source_name)["stream_phase"] == "failed"
-    out = capsys.readouterr().out
-    assert "[FTP][WARN] Truncated stream 'Game_cut.slp'" in out
-    assert "Failed to finalize" not in out
+    assert "[FTP][WARN] Truncated stream 'Game_cut.slp'" in caplog.text
+    assert "Failed to finalize" not in caplog.text
 
 
 def test_disconnected_connections_are_pruned_after_retention_window():

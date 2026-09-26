@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:4173"
+    # Root logger level. TRACE-ish per-command FTP logging is emitted at DEBUG,
+    # so set to DEBUG to see it; INFO (default) keeps prod output to events/errors.
+    LOG_LEVEL: str = "INFO"
 
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

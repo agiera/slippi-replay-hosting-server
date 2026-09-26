@@ -875,10 +875,15 @@ def list_stream_tournaments(db: Session = Depends(get_db)) -> list[TournamentSer
     return [TournamentSeriesPublic.model_validate(tournament) for tournament in tournaments]
 
 
+# Server-side bookkeeping on stream rows that must not reach anonymous SSE clients.
+_SSE_PRIVATE_SOURCE_KEYS = frozenset({"active_staged_path", "pending_enrichment", "preview_seeded_from_enrichment"})
+
+
 def _encode_stream_sources(source_names: set[str] | None) -> tuple[dict, list, str]:
     """Snapshot + JSON-encode the live sources; CPU-bound, run off the event loop."""
     snapshot = get_stream_status_snapshot(source_names)
-    sources = jsonable_encoder(snapshot["sources"])
+    public_rows = [{k: v for k, v in row.items() if k not in _SSE_PRIVATE_SOURCE_KEYS} for row in snapshot["sources"]]
+    sources = jsonable_encoder(public_rows)
     signature = json.dumps(sources, separators=(",", ":"), sort_keys=True)
     return snapshot, sources, signature
 
