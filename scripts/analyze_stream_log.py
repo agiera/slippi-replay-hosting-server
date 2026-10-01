@@ -40,6 +40,12 @@ from datetime import datetime, timedelta, timezone
 PYFTP_TS_RE = re.compile(r"^\[I (?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] (?P<rest>.*)$")
 # `docker compose logs -t` prefix, e.g. "2026-09-22T21:07:55.123456789Z "
 DOCKER_TS_RE = re.compile(r"^(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (?P<rest>.*)$")
+# Our own `logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")`,
+# which since the 2026-09-26 logging migration covers EVERY line (including
+# pyftpdlib's own connect/login/STOR/close messages) - the preferred anchor.
+APP_LOG_TS_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+\S+\s+[\w.]+: (?P<rest>.*)$"
+)
 
 LOGIN_RE = re.compile(
     r"\[FTP\]\[TRACE\] Login source='(?P<source>[^']*)' upload_session_id='(?P<sid>[^']*)'"
@@ -98,7 +104,7 @@ def parse_ts(text: str) -> datetime | None:
             return datetime.fromisoformat(iso)
         except ValueError:
             return None
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S"):
         try:
             ts = datetime.strptime(text, fmt)
         except ValueError:
@@ -139,6 +145,13 @@ def build_timeline(lines: list[str]) -> tuple[list[Session], list[dict], list[di
                 last_anchor_ts = ts
             content = m.group("rest")
 
+        m = APP_LOG_TS_RE.match(content)
+        if m:
+            ts = parse_ts(m.group("ts"))
+            if ts:
+                last_anchor_ts = ts
+            content = m.group("rest")
+
         m = PYFTP_TS_RE.match(content)
         if m:
             ts = parse_ts(m.group("ts"))
@@ -149,17 +162,20 @@ def build_timeline(lines: list[str]) -> tuple[list[Session], list[dict], list[di
         m = LOGIN_RE.search(content)
         if m:
             sid = m.group("sid")
-            sessions[sid] = Session(source=m.group("source"), sid=sid)
-            order.append(sid)
+            sessions.setdefault(sid, Session(source=m.group("source"), sid=sid))
+            if sid not in order:
+                order.append(sid)
             continue
 
         m = BOUND_STOR_RE.search(content)
         if m:
             sid = m.group("sid")
             sess = sessions.setdefault(sid, Session(source=m.group("source"), sid=sid))
+            if sid not in order:
+                order.append(sid)
             sess.file = m.group("file")
             sess.game = m.group("game")
-            sess.started_ts = parse_ts(m.group("ts"))
+            sess.started_ts = parse_ts(m.group("ts")) or sess.started_ts
             continue
 
         m = FINALIZING_RE.search(content)
@@ -173,15 +189,30 @@ def build_timeline(lines: list[str]) -> tuple[list[Session], list[dict], list[di
         if m:
             sid = m.group("sid")
             sess = sessions.setdefault(sid, Session(source=m.group("source"), sid=sid))
+            if sid not in order:
+                order.append(sid)
             sess.bytes = int(m.group("bytes"))
             sess.transfer_s = float(m.group("transfer_s"))
+            # Backfill a start time for sessions whose "started" status event
+            # fell outside the analyzed window (or was logged below INFO level).
+            if sess.started_ts is None and last_anchor_ts is not None:
+                sess.started_ts = last_anchor_ts - timedelta(seconds=sess.transfer_s)
             continue
 
         m = STATUS_RE.search(content)
         if m:
             sid = m.group("sid")
             sess = sessions.setdefault(sid, Session(source=m.group("source"), sid=sid))
+            if sid not in order:
+                order.append(sid)
             status = m.group("status")
+            if status == "started":
+                # TRACE-level Bound STOR (which carries an embedded upload_started_at)
+                # is suppressed at the prod default LOG_LEVEL=INFO; this status event
+                # is the earliest INFO-level signal, so use the line's own timestamp.
+                sess.file = sess.file or m.group("file")
+                sess.game = sess.game or m.group("game")
+                sess.started_ts = sess.started_ts or last_anchor_ts
             if status in ("completed", "failed"):
                 sess.outcome = status
             continue

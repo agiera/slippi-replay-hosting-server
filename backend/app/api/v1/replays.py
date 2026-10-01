@@ -543,8 +543,8 @@ def list_files(
             File.birth_time.label("birth_time"),
             Game._id.label("game_id"),
             Game.stream_game_id.label("stream_game_id"),
-            func.coalesce(player_one.display_name, player_one.tag, player_one.connect_code).label("player_1"),
-            func.coalesce(player_two.display_name, player_two.tag, player_two.connect_code).label("player_2"),
+            func.coalesce(player_one.display_name, player_one.connect_code, player_one.tag).label("player_1"),
+            func.coalesce(player_two.display_name, player_two.connect_code, player_two.tag).label("player_2"),
             player_one.character_id.label("player_1_character_id"),
             player_one.character_color.label("player_1_character_color"),
             player_one.costume_id.label("player_1_costume_id"),
@@ -781,7 +781,7 @@ def list_files(
             profile = profile_by_code.get(player_row.connect_code)
             rank_value = player_row.rank or (profile.rank if profile else None)
             rating_value = player_row.rating if player_row.rating is not None else (profile.rating if profile else None)
-            name_value = player_row.display_name or player_row.tag or player_row.connect_code
+            name_value = player_row.display_name or player_row.connect_code or player_row.tag
 
             normalized_players.append(
                 ReplayPlayerPublic(
@@ -1116,12 +1116,12 @@ def get_stream_status(
                 rank_lookup_complete = False
             # Normalize the live preview into the exact same player shape the
             # finished-replay endpoint returns, using the same name resolution
-            # (display_name -> tag -> connect_code). The controller sidecar only
+            # (display_name -> connect_code -> tag). The controller sidecar only
             # knows identity fields; character/type/winner are unknown until the
             # SLP is parsed, so they stay null here.
             enriched_preview.append(
                 {
-                    "name": preview.get("display_name") or preview.get("tag") or slippi_code,
+                    "name": preview.get("display_name") or slippi_code or preview.get("tag"),
                     "connect_code": slippi_code,
                     "character_id": preview.get("character_id"),
                     "character_color": None,

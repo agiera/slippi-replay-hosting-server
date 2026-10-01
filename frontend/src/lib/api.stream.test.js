@@ -17,6 +17,14 @@ test("normalizeStreamEventPayload maps slippi_code to connect_code and name fall
   assert.equal(normalized.is_cpu, false);
 });
 
+test("normalizeStreamEventPayload prefers display name, then code, over nametag", () => {
+  const player = { name: "Resolved Name", tag: "TAG", display_name: "Display", slippi_code: "CODE#123" };
+  assert.equal(normalizeStreamEventPayload(player).name, "Display");
+  assert.equal(normalizeStreamEventPayload({ ...player, display_name: null }).name, "Resolved Name");
+  assert.equal(normalizeStreamEventPayload({ ...player, display_name: null, name: null }).name, "CODE#123");
+  assert.equal(normalizeStreamEventPayload({ name: null, tag: "TAG" }).name, "TAG");
+});
+
 test("normalizeStreamStatusPayload normalizes source player previews", () => {
   const payload = {
     tournament: { id: 1, name: "Test Open" },

@@ -181,7 +181,7 @@ export async function fetchStreamStatus(tournamentId) {
 
 export function normalizeStreamEventPayload(payload) {
   const connectCode = payload?.connect_code || payload?.slippi_code || null;
-  const name = payload?.name || payload?.display_name || payload?.tag || connectCode || null;
+  const name = payload?.display_name || payload?.name || connectCode || payload?.tag || null;
   return {
     ...payload,
     name,

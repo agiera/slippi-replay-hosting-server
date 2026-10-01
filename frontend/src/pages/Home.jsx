@@ -744,7 +744,7 @@ function renderPlayerCell(player) {
   const characterImage = getCharacterStock(info.character_id, info.costume_id ?? info.character_color);
   const rankImage = getRankImage(info.rank);
   const rating = info.rating ?? "--";
-  const displayName = info.name || info.display_name || info.tag || info.connect_code || "-";
+  const displayName = info.display_name || info.name || info.connect_code || info.tag || "-";
   const connectCode = info.connect_code || "-";
   const isWinner = info.is_winner === 1;
   const isCpu = Boolean(info.is_cpu) || Number(info.type) === 1;

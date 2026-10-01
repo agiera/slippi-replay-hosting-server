@@ -2,6 +2,8 @@ import time
 
 from app.core.security import create_download_signature
 from app.models.file import File
+from app.models.game import Game
+from app.models.player import Player
 from app.models.repository import Repository
 from app.models.user import User
 
@@ -40,6 +42,25 @@ def test_private_repo_hidden_from_anonymous(client, db_session):
 
     res = client.get(f"/api/v1/replays/files/{private_id}/download")
     assert res.status_code == 404
+
+
+def test_replay_player_names_prefer_display_name_then_code(client, db_session):
+    public_id, _ = _seed_repos_and_files(db_session)
+    game = Game(file_id=public_id)
+    db_session.add(game)
+    db_session.flush()
+    db_session.add_all([
+        Player(game_id=game._id, port=1, display_name="Display", connect_code="CODE#123", tag="TAG"),
+        Player(game_id=game._id, port=2, connect_code="OTHER#456", tag="OTHR"),
+    ])
+    db_session.commit()
+
+    listing = client.get("/api/v1/replays/files")
+    assert listing.status_code == 200
+    item = next(item for item in listing.json()["items"] if item["id"] == public_id)
+    assert item["player_1"] == "Display"
+    assert item["player_2"] == "OTHER#456"
+    assert [player["name"] for player in item["players"]] == ["Display", "OTHER#456"]
 
 
 def test_member_sees_private_repo_with_signed_download_url(client, db_session):
