@@ -86,7 +86,7 @@ class Session:
     game: str | None = None
     started_ts: datetime | None = None
     finalized_ts: datetime | None = None
-    outcome: str | None = None  # completed / failed / open-at-eof
+    outcome: str | None = None  # completed / failed / incomplete / open-at-eof
     bytes: int | None = None
     transfer_s: float | None = None
     reason: str | None = None
@@ -202,6 +202,8 @@ def build_timeline(lines: list[str]) -> tuple[list[Session], list[dict], list[di
         m = STATUS_RE.search(content)
         if m:
             sid = m.group("sid")
+            if sid in {"", "None", "-"}:
+                continue
             sess = sessions.setdefault(sid, Session(source=m.group("source"), sid=sid))
             if sid not in order:
                 order.append(sid)
@@ -213,7 +215,11 @@ def build_timeline(lines: list[str]) -> tuple[list[Session], list[dict], list[di
                 sess.file = sess.file or m.group("file")
                 sess.game = sess.game or m.group("game")
                 sess.started_ts = sess.started_ts or last_anchor_ts
-            if status in ("completed", "failed"):
+            if status == "incomplete":
+                sess.outcome = status
+            elif status in ("completed", "failed"):
+                sess.outcome = status
+            elif status == "abandoned" and sess.outcome is None:
                 sess.outcome = status
             continue
 
@@ -267,9 +273,14 @@ def summarize(sessions: list[Session], anomalies: list[dict], sse_opens: list[in
 
     completed = [s for s in scoped if s.outcome == "completed"]
     failed = [s for s in scoped if s.outcome == "failed"]
+    incomplete = [s for s in scoped if s.outcome == "incomplete"]
+    abandoned = [s for s in scoped if s.outcome == "abandoned"]
     open_at_eof = [s for s in scoped if s.outcome is None]
 
-    print(f"completed={len(completed)} failed={len(failed)} still-open-at-log-end={len(open_at_eof)}")
+    print(
+        f"completed={len(completed)} failed={len(failed)} incomplete={len(incomplete)} "
+        f"abandoned={len(abandoned)} still-open-at-log-end={len(open_at_eof)}"
+    )
 
     if failed:
         print("\n-- Failed uploads --")

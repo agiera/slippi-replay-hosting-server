@@ -1,8 +1,27 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.schemas.replay import ReplayPlayerPublic
+
+
+class FirmwareDiagnostics(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+
+    version: Literal[1]
+    bytes_sent: int = Field(ge=0, le=0xFFFFFFFF)
+    stalls: int = Field(ge=0, le=0xFFFFFFFF)
+    max_stall_ms: int = Field(ge=0, le=0xFFFFFFFF)
+    max_backlog: int = Field(ge=0, le=0xFFFFFFFF)
+    last_socket_error: int = Field(ge=-0x80000000, le=0)
+    start_result: int = Field(ge=-4, le=1)
+    cancel_reason: int = Field(ge=0, le=3)
+    footer_result: int = Field(ge=-4, le=1)
+    finish_result: int = Field(ge=-4, le=1)
+    fallback_result: int = Field(ge=-4, le=1)
+    local_available: Literal[0, 1]
+    game_end_seen: Literal[0, 1]
 
 
 class TournamentSeriesPublic(BaseModel):

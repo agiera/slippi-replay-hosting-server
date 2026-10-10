@@ -25,6 +25,7 @@ from app.models.game import Game
 from app.models.player import Player
 from app.models.source_metadata import SourceMetadata
 from app.models.user import User
+from app.schemas.streaming import FirmwareDiagnostics
 from app.services.peppi_ingest import (
     normalize_controller_metadata_players,
     parse_slippi_start_partial,
@@ -225,7 +226,7 @@ class ReplayFTPHandler(FTPHandler):
         if stor_file_key:
             self._session_seen_stor_file_keys.add(stor_file_key)
             self._session_stor_started_monotonic[stor_file_key] = time.monotonic()
-        if not self._is_metadata_sidecar_filename(file):
+        if not self._is_auxiliary_filename(file):
             self._session_replay_transfer_attempted = True
             if self.ftp_session is not None and not self._session_started_event_emitted:
                 _record_stream_event(
@@ -257,7 +258,7 @@ class ReplayFTPHandler(FTPHandler):
         # For a live replay upload, parse the partial SLP as it streams in so the
         # live row shows the same players + stage the finished row will (the
         # controller sidecar alone lacks CPUs, characters and stage).
-        if self.ftp_session is not None and not self._is_metadata_sidecar_filename(file):
+        if self.ftp_session is not None and not self._is_auxiliary_filename(file):
             _set_source_active_staged_file(self.ftp_session.source_name, str(file))
             if stor_file_key:
                 with _stream_state_lock:
@@ -313,6 +314,20 @@ class ReplayFTPHandler(FTPHandler):
                 return
 
             original_name = staged_path.name
+            if original_name.lower().endswith(".diag.json"):
+                try:
+                    if staged_path.stat().st_size > 2048:
+                        raise ValueError("diagnostic sidecar exceeds 2048 bytes")
+                    diagnostic = FirmwareDiagnostics.model_validate_json(staged_path.read_bytes())
+                    logger.info(
+                        "[FTP][DIAG] source=%r replay=%r summary=%s",
+                        self.ftp_session.source_name,
+                        original_name[:-10],
+                        diagnostic.model_dump_json(),
+                    )
+                except ValueError as exc:
+                    logger.warning("[FTP][DIAG] Rejected diagnostic source=%r: %s", self.ftp_session.source_name, exc)
+                return
             data = staged_path.read_bytes()
 
             if self._is_metadata_sidecar_filename(original_name):
@@ -432,7 +447,7 @@ class ReplayFTPHandler(FTPHandler):
                 self._session_seen_stor_file_keys.discard(file_key)
                 self._session_upload_context_by_file_key.pop(file_key, None)
                 self._session_stor_started_monotonic.pop(file_key, None)
-            if self.ftp_session is not None and not self._is_metadata_sidecar_filename(staged_path.name):
+            if self.ftp_session is not None and not self._is_auxiliary_filename(staged_path.name):
                 _set_source_active_staged_file(self.ftp_session.source_name, None)
             try:
                 staged_path.unlink(missing_ok=True)
@@ -624,7 +639,7 @@ class ReplayFTPHandler(FTPHandler):
             "[FTP][ERROR] Incomplete upload file='%s' %s bytes_staged=%d transfer_s=%s",
             Path(file).name, self._trace_scope(), staged_bytes, transfer_s_text,
         )
-        if not self._is_metadata_sidecar_filename(Path(file).name):
+        if not self._is_auxiliary_filename(Path(file).name):
             self._session_replay_transfer_attempted = True
             if self.ftp_session is not None:
                 _set_source_active_staged_file(self.ftp_session.source_name, None)
@@ -683,6 +698,10 @@ class ReplayFTPHandler(FTPHandler):
                 pass
         self.authorizer.clear_context(self)
         super().on_disconnect()
+
+    @staticmethod
+    def _is_auxiliary_filename(filename: str) -> bool:
+        return str(filename).lower().endswith((".meta.json", ".diag.json"))
 
     @staticmethod
     def _is_metadata_sidecar_filename(filename: str) -> bool:

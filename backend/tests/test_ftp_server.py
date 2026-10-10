@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,76 @@ def _get_source_state(source_name: str) -> dict:
     # Stream state is keyed by upload_session_id; resolve via the source index.
     with _stream_state_lock:
         return dict(_source_connections[_source_connection_index[source_name]])
+
+
+@pytest.mark.parametrize("invalid", [None, "json", "extra", "oversize", "type"])
+def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
+    from app.services import ftp_server
+
+    payload = {
+        "version": 1, "bytes_sent": 1234, "stalls": 2, "max_stall_ms": 500,
+        "max_backlog": 4096, "last_socket_error": -6, "start_result": 0,
+        "cancel_reason": 1, "footer_result": 1, "finish_result": 1,
+        "fallback_result": 1, "local_available": 0, "game_end_seen": 1,
+    }
+    if invalid == "extra":
+        payload["secret"] = "unexpected"
+    if invalid == "type":
+        payload["stalls"] = "2"
+    diagnostic_file = tmp_path / "Game_test.slp.diag.json"
+    data = json.dumps(payload).encode()
+    if invalid == "json":
+        data = b"{"
+    if invalid == "oversize":
+        data = b"x" * 2049
+    diagnostic_file.write_bytes(data)
+
+    handler = ReplayFTPHandler.__new__(ReplayFTPHandler)
+    handler.ftp_session = FTPSessionContext(1, 1, "ftpuser", "wii-test", {"public"}, "public", str(tmp_path))
+    handler._session_seen_stor_file_keys = {diagnostic_file.name}
+    handler._session_upload_context_by_file_key = {}
+    handler._session_stor_started_monotonic = {}
+    handler._session_replay_transfer_attempted = False
+    handler._stop_live_partial_parse = lambda: None
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Diagnostic uploads must not mutate replay state or persist replays")
+
+    monkeypatch.setattr(ftp_server, "_record_stream_event", unexpected)
+    monkeypatch.setattr(ftp_server, "_set_source_active_staged_file", unexpected)
+    monkeypatch.setattr(ftp_server, "persist_replay_upload", unexpected)
+    if invalid == "oversize":
+        monkeypatch.setattr(Path, "read_bytes", unexpected)
+    with caplog.at_level("INFO", logger="app.services.ftp_server"):
+        handler.on_file_received(str(diagnostic_file))
+
+    assert not diagnostic_file.exists()
+    assert not handler._session_replay_transfer_attempted
+    assert ("Rejected diagnostic" in caplog.text) == (invalid is not None)
+    if invalid is None:
+        assert "source='wii-test' replay='Game_test.slp'" in caplog.text
+        assert '"bytes_sent":1234' in caplog.text
+
+
+def test_diagnostic_stor_does_not_start_a_game(monkeypatch, tmp_path):
+    from pyftpdlib.handlers import FTPHandler
+    from app.services import ftp_server
+
+    handler = ReplayFTPHandler.__new__(ReplayFTPHandler)
+    handler.ftp_session = FTPSessionContext(1, 1, "ftpuser", "wii-test", {"public"}, "public", str(tmp_path))
+    handler._session_seen_stor_file_keys = set()
+    handler._session_stor_started_monotonic = {}
+    handler._session_replay_transfer_attempted = False
+    monkeypatch.setattr(ftp_server.settings, "FTP_STAGING_DIR", str(tmp_path))
+    monkeypatch.setattr(FTPHandler, "ftp_STOR", lambda *args: None)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Diagnostic STOR must not create a live game or start partial parsing")
+
+    monkeypatch.setattr(ftp_server, "_record_stream_event", unexpected)
+    monkeypatch.setattr(handler, "_start_live_partial_parse", unexpected)
+    handler.ftp_STOR(str(tmp_path / "Game_test.slp.diag.json"))
+    assert not handler._session_replay_transfer_attempted
 
 
 def test_finalize_streamed_slp_raw_length():
