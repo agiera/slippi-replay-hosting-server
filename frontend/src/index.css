@@ -1,15 +1,4 @@
-/*
- * Tailwind v4 entry. Preflight (Tailwind's reset) is intentionally not loaded
- * yet: the pre-Tailwind stylesheet still styles TopNav, Login and Settings and
- * relies on browser defaults. It lives in the `legacy` layer, below utilities,
- * so Tailwind classes always win where both apply. Once those pages are ported,
- * drop styles.css and switch to a plain `@import "tailwindcss";`.
- */
-@layer theme, base, legacy, components, utilities;
-
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
-@import "./styles.css" layer(legacy);
+@import "tailwindcss";
 
 @theme {
   --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
@@ -45,12 +34,20 @@
 }
 
 @layer base {
-  /* The one piece of preflight needed now: form controls use the page font. */
-  button,
-  input,
-  select,
-  textarea {
-    font: inherit;
+  html,
+  body,
+  #root {
+    background-color: var(--color-bg);
+  }
+
+  html,
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    min-height: 100vh;
+    color: var(--color-fg);
   }
 }
 

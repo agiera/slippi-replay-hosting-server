@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 
 import { SLIPPILAB_URL } from "../config/env";
 import { logout } from "../lib/api/auth";
 import { getAccessToken } from "../lib/api/session";
+import { cn } from "../lib/cn";
+
+const LINK_CLASS = "cursor-pointer text-[0.92rem] font-semibold text-muted no-underline hover:text-accent-strong";
+
+// Route links are highlighted while their page is open.
+function navLinkClass({ isActive }) {
+  return cn(LINK_CLASS, isActive && "text-fg");
+}
 
 export default function TopNav() {
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getAccessToken()));
@@ -21,24 +29,24 @@ export default function TopNav() {
   }, []);
 
   return (
-    <header className="top-nav">
-      <nav className="top-nav-inner">
-        <div className="top-nav-left">
-          <Link className="top-nav-link" to="/">
+    <header className="sticky top-0 z-10 border-b border-accent/35 bg-black/72 backdrop-blur-[6px]">
+      <nav className="mx-auto flex min-h-(--top-nav-height) max-w-[1080px] items-center justify-between px-4">
+        <div className="flex items-center gap-3">
+          <NavLink className={navLinkClass} to="/" end>
             Replays
-          </Link>
-          <a className="top-nav-link" href={SLIPPILAB_URL} target="_blank" rel="noreferrer">
+          </NavLink>
+          <a className={LINK_CLASS} href={SLIPPILAB_URL} target="_blank" rel="noreferrer">
             SlippiLab
           </a>
         </div>
-        <div className="top-nav-right">
+        <div className="flex items-center gap-3">
           {isAuthenticated ? (
             <>
-              <Link className="top-nav-link" to="/settings">
+              <NavLink className={navLinkClass} to="/settings">
                 Settings
-              </Link>
+              </NavLink>
               <button
-                className="top-nav-link top-nav-button"
+                className={cn(LINK_CLASS, "bg-transparent p-0")}
                 onClick={async () => {
                   await logout();
                   window.location.href = "/login";
@@ -49,9 +57,9 @@ export default function TopNav() {
               </button>
             </>
           ) : (
-            <Link className="top-nav-link login-link" to="/login">
+            <NavLink className={navLinkClass} to="/login">
               Login
-            </Link>
+            </NavLink>
           )}
         </div>
       </nav>
