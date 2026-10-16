@@ -5,6 +5,7 @@ import {
   buildApiUrl,
   buildSlippiDeepLink,
   buildSlippiLabViewerUrl,
+  buildSlippiProfileUrl,
   buildSlippiMirrorDeepLink,
   resolveReplayDownloadUrl,
 } from "./links.js";
@@ -56,4 +57,17 @@ test("buildSlippiLabViewerUrl needs both a replay url and a SlippiLab url", () =
   );
   assert.equal(buildSlippiLabViewerUrl("https://replays.example/x.slp", ""), "");
   assert.equal(buildSlippiLabViewerUrl("", "https://lab.example"), "");
+});
+
+test("buildSlippiProfileUrl turns a connect code into a slippi.gg profile link", () => {
+  assert.equal(buildSlippiProfileUrl("ant#0"), "https://slippi.gg/user/ant-0");
+  assert.equal(buildSlippiProfileUrl("MANG#0"), "https://slippi.gg/user/mang-0");
+  assert.equal(buildSlippiProfileUrl(" ZAIN#123 "), "https://slippi.gg/user/zain-123");
+});
+
+test("buildSlippiProfileUrl is empty without a valid code", () => {
+  assert.equal(buildSlippiProfileUrl(null), "");
+  assert.equal(buildSlippiProfileUrl(""), "");
+  assert.equal(buildSlippiProfileUrl("-"), "");
+  assert.equal(buildSlippiProfileUrl("ANT"), "");
 });

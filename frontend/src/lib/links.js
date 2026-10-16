@@ -56,3 +56,12 @@ export function buildSlippiLabViewerUrl(replayUrl, slippiLabUrl = SLIPPILAB_URL)
   }
   return `${slippiLabUrl}?replayUrl=${encodeURIComponent(replayTarget)}`;
 }
+
+// "ANT#0" -> "https://slippi.gg/user/ant-0". Empty for a missing or malformed code.
+export function buildSlippiProfileUrl(connectCode) {
+  const match = /^([^#\s]+)#(\d+)$/.exec(String(connectCode ?? "").trim());
+  if (!match) {
+    return "";
+  }
+  return `https://slippi.gg/user/${encodeURIComponent(match[1].toLowerCase())}-${match[2]}`;
+}

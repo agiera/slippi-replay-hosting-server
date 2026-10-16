@@ -7,6 +7,8 @@ class ReplayPlayerPublic(BaseModel):
     character_id: int | None
     character_color: int | None
     costume_id: int | None
+    # Team colour (0 red, 1 blue, 2 green); set only when the game is in team mode.
+    team_id: int | None = None
     port: int | None
     type: int | None = None
     is_cpu: bool = False
@@ -32,6 +34,8 @@ class ReplayFilePublic(BaseModel):
     player_2_info: ReplayPlayerPublic | None
     players: list[ReplayPlayerPublic] = []
     stage: int | None
+    # Melee team mode, read from the replay by peppi. Players' team_id says who is on which team.
+    is_teams: bool = False
     game_duration: int | None
     datetime_played: str | None
     handwarmer_label: str | None = None

@@ -80,6 +80,8 @@ def parse_slippi_bytes(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
                 "startgg_id": ctrl.get("startgg_id"),
                 "parrygg_id": ctrl.get("parrygg_id"),
                 "is_winner": winners_by_port.get(port),
+                # Team colour (0 red, 1 blue, 2 green); only meaningful in team mode.
+                "team_id": player.team.color if game.start.is_teams and player.team is not None else None,
             }
         )
 
