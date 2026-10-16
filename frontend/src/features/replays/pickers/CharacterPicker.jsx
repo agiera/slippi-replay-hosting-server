@@ -1,7 +1,7 @@
 import { getCharacterStock } from "../../../assets";
 import { CHARACTER_LIST } from "../../../data/characters";
 import { parseSelectedCharacterIds } from "../filters";
-import { HoverPicker } from "./HoverPicker";
+import { PickerPopover } from "./PickerPopover";
 import { IconChip } from "./IconChip";
 
 // `selected` / `onChange` use the comma-separated character id format ("2,9").
@@ -26,14 +26,14 @@ export function CharacterPicker({ selected, onChange }) {
         key={character.id}
         src={icon}
         alt={character.name}
-        className="size-4 object-contain [image-rendering:pixelated]"
+        className="size-5 object-contain [image-rendering:pixelated]"
       />
     ) : null;
   });
 
   return (
-    <HoverPicker
-      label={selectedChars.length === 0 ? "Character" : ""}
+    <PickerPopover
+      label="Characters"
       selectedIcons={selectedIcons}
       onClear={selectedChars.length > 0 ? () => onChange("") : null}
     >
@@ -47,6 +47,6 @@ export function CharacterPicker({ selected, onChange }) {
           onClick={() => toggleCharacter(id)}
         />
       ))}
-    </HoverPicker>
+    </PickerPopover>
   );
 }

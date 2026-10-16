@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { cn } from "../../lib/cn";
+import { useDismiss } from "./useDismiss";
 
 const splitValues = (value) =>
   value
@@ -16,21 +17,19 @@ export function MultiSelect({ label, selected, options, onChange }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef(null);
+  const triggerRef = useRef(null);
 
   const selectedValues = new Set(splitValues(selected));
   const normalizedQuery = query.toLowerCase().trim();
   const filteredOptions = options.filter((option) => option.toLowerCase().includes(normalizedQuery));
 
-  useEffect(() => {
-    function handleDocumentClick(event) {
-      if (rootRef.current && !rootRef.current.contains(event.target)) {
-        setOpen(false);
-      }
+  const close = useCallback((reason) => {
+    setOpen(false);
+    if (reason === "escape") {
+      triggerRef.current?.focus();
     }
-
-    document.addEventListener("mousedown", handleDocumentClick);
-    return () => document.removeEventListener("mousedown", handleDocumentClick);
   }, []);
+  useDismiss(rootRef, open, close);
 
   function toggleValue(value) {
     const next = new Set(selectedValues);
@@ -52,6 +51,7 @@ export function MultiSelect({ label, selected, options, onChange }) {
   return (
     <div className="relative" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={open}
         className={cn(

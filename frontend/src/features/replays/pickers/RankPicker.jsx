@@ -1,6 +1,6 @@
 import { getRankImage } from "../../../assets";
 import { MAX_SELECTED_RANKS, RANK_LIST } from "../../../data/ranks";
-import { HoverPicker } from "./HoverPicker";
+import { PickerPopover } from "./PickerPopover";
 import { IconChip } from "./IconChip";
 
 // Picks up to two ranks (a range); `selected` is "Gold_I,Diamond_II".
@@ -24,11 +24,11 @@ export function RankPicker({ selected, onChange }) {
 
   const selectedIcons = selectedValues.map((rankName) => {
     const icon = getRankImage(rankName);
-    return icon ? <img key={rankName} src={icon} alt={rankName} className="size-[18px] object-contain" /> : null;
+    return icon ? <img key={rankName} src={icon} alt={rankName.replace(/_/g, " ")} className="size-5 object-contain" /> : null;
   });
 
   return (
-    <HoverPicker
+    <PickerPopover
       label="Rank"
       selectedIcons={selectedIcons}
       onClear={selectedValues.length > 0 ? () => onChange("") : null}
@@ -45,6 +45,6 @@ export function RankPicker({ selected, onChange }) {
           onClick={() => toggleRank(rankName)}
         />
       ))}
-    </HoverPicker>
+    </PickerPopover>
   );
 }

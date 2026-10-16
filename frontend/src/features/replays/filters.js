@@ -108,3 +108,67 @@ export function pruneCostumeSelection(costumeValue, selectedCharacterIds, getCos
 
   return serializeCostumeSelection(pruned);
 }
+
+const formatRankName = (rankName) => rankName.replace(/_/g, " ");
+
+const splitList = (value) =>
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+// Lists up to two values, then a count.
+function summarizeList(values) {
+  return values.length <= 2 ? values.join(", ") : `${values.length} selected`;
+}
+
+// "2026-10-01" -> "Oct 1, 2026", read as a calendar date (no time zone shift).
+function formatFilterDate(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) {
+    return value;
+  }
+  return new Date(year, month - 1, day).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+const FILTER_DESCRIPTIONS = {
+  keyword: (value) => `“${value}”`,
+  player: (value) => `Player: ${value}`,
+  repository: (value) => `Repository: ${summarizeList(splitList(value))}`,
+  tournament: (value) => `Tournament: ${summarizeList(splitList(value))}`,
+  source: (value) => `Source: ${summarizeList(splitList(value))}`,
+  character: (value) => {
+    const names = parseSelectedCharacterIds(value).map((id) => CHARACTER_BY_ID.get(id).name);
+    return names.length > 0 ? summarizeList(names) : null;
+  },
+  costume: (value) => {
+    let count = 0;
+    parseCostumeSelection(value).forEach((costumeIds) => {
+      count += costumeIds.size;
+    });
+    return count > 0 ? `${count} ${count === 1 ? "costume" : "costumes"}` : null;
+  },
+  rank: (value) => `Rank: ${splitList(value).map(formatRankName).join(" to ")}`,
+  min_rank: (value) => `Rating ${value}+`,
+  max_rank: (value) => `Rating up to ${value}`,
+  ranked: (value) => `Ranked: ${value}`,
+  include_handwarmers: () => "With hand warmers",
+  date_from: (value) => `From ${formatFilterDate(value)}`,
+  date_to: (value) => `Until ${formatFilterDate(value)}`,
+};
+
+// One { key, label } per active filter, in INITIAL_FILTERS order, for the chip row.
+export function describeActiveFilters(filters) {
+  return Object.keys(INITIAL_FILTERS).flatMap((key) => {
+    const value = filters[key];
+    if (!value) {
+      return [];
+    }
+    const label = FILTER_DESCRIPTIONS[key](value);
+    return label ? [{ key, label }] : [];
+  });
+}

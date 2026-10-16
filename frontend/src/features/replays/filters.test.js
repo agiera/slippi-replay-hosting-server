@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   INITIAL_FILTERS,
   buildSearchParams,
+  describeActiveFilters,
   parseCostumeSelection,
   parseFiltersFromSearch,
   parseSelectedCharacterIds,
@@ -50,4 +51,34 @@ test("pruneCostumeSelection drops unselected characters and missing costumes", (
   assert.equal(pruneCostumeSelection("2:1,2:7,9:1", [2], getCostumeIds), "2:1");
   assert.equal(pruneCostumeSelection("2:1,9:1", [2, 9], getCostumeIds), "2:1,9:1");
   assert.equal(pruneCostumeSelection("2:1", [], getCostumeIds), "");
+});
+
+test("describeActiveFilters labels each set filter in a stable order", () => {
+  const filters = {
+    ...INITIAL_FILTERS,
+    keyword: "grand finals",
+    character: "2,9",
+    costume: "2:0,2:3",
+    rank: "Gold_I,Diamond_II",
+    min_rank: "1400",
+    repository: "genesis,locals,scratch",
+    include_handwarmers: "1",
+    date_from: "2026-10-01",
+  };
+
+  assert.deepEqual(describeActiveFilters(filters), [
+    { key: "keyword", label: "“grand finals”" },
+    { key: "character", label: "Fox, Marth" },
+    { key: "costume", label: "2 costumes" },
+    { key: "rank", label: "Rank: Gold I to Diamond II" },
+    { key: "min_rank", label: "Rating 1400+" },
+    { key: "repository", label: "Repository: 3 selected" },
+    { key: "include_handwarmers", label: "With hand warmers" },
+    { key: "date_from", label: "From Oct 1, 2026" },
+  ]);
+});
+
+test("describeActiveFilters skips empty and unrecognised selections", () => {
+  assert.deepEqual(describeActiveFilters(INITIAL_FILTERS), []);
+  assert.deepEqual(describeActiveFilters({ ...INITIAL_FILTERS, character: "999" }), []);
 });

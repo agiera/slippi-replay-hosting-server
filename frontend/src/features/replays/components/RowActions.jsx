@@ -1,15 +1,20 @@
 import { Button, ButtonLink } from "../../../components/ui/Button";
 import { buildSlippiDeepLink, buildSlippiLabViewerUrl, resolveReplayDownloadUrl } from "../../../lib/links";
 
-// Action buttons for a row: follow a live stream, wait while finalizing, or open/download a replay.
+const TEXT_LINK =
+  "cursor-pointer rounded border-0 bg-transparent p-0 text-[0.8rem] font-semibold text-muted no-underline " +
+  "underline-offset-2 hover:text-fg hover:underline aria-disabled:pointer-events-none aria-disabled:opacity-50";
+
+// Actions for a row: follow a live stream, wait while finalizing, or open/download a replay.
+// One button for the main action, smaller text links for the rest.
 export function RowActions({ row, followSource, onFollow, onStopFollowing }) {
   return (
-    <div className="flex min-h-[100px] flex-col items-start justify-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 md:grid md:justify-items-stretch">
       {row.lifecycle === "live" ? (
         <LiveActions row={row} followSource={followSource} onFollow={onFollow} onStopFollowing={onStopFollowing} />
       ) : row.lifecycle === "finalizing" ? (
         <Button variant="secondary" size="sm" disabled>
-          Finalizing...
+          Finalizing…
         </Button>
       ) : (
         <ReplayActions row={row} />
@@ -22,13 +27,17 @@ function LiveActions({ row, followSource, onFollow, onStopFollowing }) {
   const isFollowing = Boolean(followSource) && followSource === row.source_name;
   return (
     <>
-      <Button variant="secondary" size="sm" onClick={() => onFollow(row.source_name, row.stream_game_id)}>
+      <Button
+        variant={isFollowing ? "secondary" : "primary"}
+        size="sm"
+        onClick={() => onFollow(row.source_name, row.stream_game_id)}
+      >
         {isFollowing ? "Following in Slippi" : "Stream in Slippi"}
       </Button>
       {isFollowing ? (
-        <Button variant="secondary" size="sm" onClick={onStopFollowing}>
-          Stop
-        </Button>
+        <button type="button" className={TEXT_LINK} onClick={onStopFollowing}>
+          Stop following
+        </button>
       ) : null}
     </>
   );
@@ -44,22 +53,26 @@ function ReplayActions({ row }) {
       <ButtonLink size="sm" href={slippiHref || undefined} aria-disabled={!slippiHref || undefined}>
         View in Slippi
       </ButtonLink>
-      <ButtonLink
-        size="sm"
-        href={viewerHref || undefined}
-        aria-disabled={!viewerHref || undefined}
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        View on SlippiLab
-      </ButtonLink>
-      <Button
-        size="sm"
-        disabled={!row.fileId}
-        onClick={() => window.open(replayUrl, "_blank", "noopener,noreferrer")}
-      >
-        Download
-      </Button>
+      <div className="flex gap-3 md:justify-center">
+        <a
+          className={TEXT_LINK}
+          href={viewerHref || undefined}
+          aria-disabled={!viewerHref || undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          SlippiLab
+        </a>
+        <a
+          className={TEXT_LINK}
+          href={row.fileId ? replayUrl : undefined}
+          aria-disabled={!row.fileId || undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Download
+        </a>
+      </div>
     </>
   );
 }

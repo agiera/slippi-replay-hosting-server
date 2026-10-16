@@ -1,43 +1,51 @@
-import { crownImage, getCharacterStock, getPortIcon, getRankImage } from "../../../assets";
+import { crownImage, getCharacterStock, getRankImage } from "../../../assets";
+import { cn } from "../../../lib/cn";
 import { getPlayerDisplay } from "../players";
 
 const PORT_SLOTS = [1, 2, 3, 4];
+// The player's own port dot is lit in its controller colour; the others stay grey.
+const PORT_DOT_COLORS = { 1: "bg-p1", 2: "bg-p2", 3: "bg-p3", 4: "bg-p4" };
 
-// One player column. Live and completed rows share the same normalized player
-// shape. `player` is null for padded slots (rows with fewer players than columns).
+// One player. Live and completed rows share the same normalized player shape.
 export function PlayerCell({ player }) {
-  if (!player) {
-    return <div className="min-h-[100px]" />;
-  }
-
+  const port = PORT_SLOTS.includes(Number(player.port)) ? Number(player.port) : null;
   const characterImage = getCharacterStock(player.character_id, player.costume_id ?? player.character_color);
   const rankImage = getRankImage(player.rank);
   const { displayName, connectCode, rating, isWinner, isCpu } = getPlayerDisplay(player);
+  const name = isCpu && displayName === "-" ? "CPU" : displayName;
 
   return (
-    <div className="grid min-h-[100px] content-center gap-[5px]">
-      <div className="flex items-center gap-1.5">
-        <div className="font-semibold text-fg">
-          {displayName}
-          {isCpu ? " [CPU]" : ""}
-        </div>
-        {isWinner ? <img src={crownImage} alt="Winner" className="size-[13px] object-contain" /> : null}
+    <div className="flex min-w-0 items-center gap-2.5">
+      <div className="flex size-8 shrink-0 items-center justify-center">
+        {characterImage ? (
+          <img src={characterImage} alt="" className="size-8 object-contain [image-rendering:pixelated]" />
+        ) : null}
       </div>
-      <div className="text-[0.75rem] tracking-[0.02em] text-subtle">{connectCode}</div>
-      <div className="flex items-center gap-2">
-        <div className="flex size-[26px] items-center justify-center">
-          {characterImage ? <img src={characterImage} alt="Character" className="max-h-full max-w-full object-contain" /> : "-"}
+      <div className="grid min-w-0 gap-px">
+        <div className="flex min-w-0 items-center gap-1">
+          <span className="truncate font-semibold text-fg" title={name}>
+            {name}
+          </span>
+          {isCpu && name !== "CPU" ? <span className="shrink-0 text-[0.72rem] text-muted">CPU</span> : null}
+          {isWinner ? <img src={crownImage} alt="Winner" title="Winner" className="size-3.5 shrink-0 object-contain" /> : null}
         </div>
-        <div className="flex size-[26px] items-center justify-center">
-          {rankImage ? <img src={rankImage} alt="Rank" className="max-h-full max-w-full object-contain" /> : "-"}
+        {isCpu ? null : <div className="truncate text-[0.76rem] text-subtle">{connectCode}</div>}
+        {rankImage || player.rating != null ? (
+          <div className="flex items-center gap-1 text-[0.8rem] font-medium text-subtle tabular-nums">
+            {rankImage ? (
+              <img src={rankImage} alt={String(player.rank).replace(/_/g, " ")} className="size-4 object-contain" />
+            ) : null}
+            {rating}
+          </div>
+        ) : null}
+        <div className="mt-1 flex gap-1" role="img" aria-label={port ? `Port ${port}` : "Port unknown"}>
+          {PORT_SLOTS.map((slot) => (
+            <span
+              key={slot}
+              className={cn("size-[7px] rounded-full", slot === port ? PORT_DOT_COLORS[slot] : "bg-muted/30")}
+            />
+          ))}
         </div>
-        <div className="text-[0.84rem] font-semibold text-subtle">{rating}</div>
-      </div>
-      <div className="flex gap-1">
-        {PORT_SLOTS.map((slot) => {
-          const icon = getPortIcon(player.port ?? null, slot);
-          return icon ? <img key={slot} src={icon} alt={`Port ${slot}`} className="size-3.5 opacity-95" /> : null;
-        })}
       </div>
     </div>
   );

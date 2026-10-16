@@ -1,8 +1,10 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { FilterSidebar } from "../features/replays/components/FilterSidebar";
-import { ReplayTable } from "../features/replays/components/ReplayTable";
+import { FilterToolbar } from "../features/replays/components/FilterToolbar";
+import { ReplayList } from "../features/replays/components/ReplayList";
 import { TopFilterBar } from "../features/replays/components/TopFilterBar";
+import { describeActiveFilters } from "../features/replays/filters";
 import { useFilterOptions } from "../features/replays/hooks/useFilterOptions";
 import { useLiveStream } from "../features/replays/hooks/useLiveStream";
 import { useNow } from "../features/replays/hooks/useNow";
@@ -19,6 +21,8 @@ export default function Home() {
     onTerminalRow: feed.preserveTerminalRow,
   });
   const nowMs = useNow(1000);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const closeFilters = useCallback(() => setFiltersOpen(false), []);
 
   // Live stream rows first, then completed replays; a live row is swapped for
   // its completed replay once that lands in the feed.
@@ -33,6 +37,9 @@ export default function Home() {
     [live.streamStatus, feed.files, nowMs, feed.preservedTerminalRows],
   );
 
+  // Clearing characters also clears their costume picks.
+  const removeFilter = (key) => (key === "character" ? setCharacters("") : setFilter(key, ""));
+
   return (
     <main className="block min-h-[calc(100vh-46px)] px-2 pb-7">
       <TopFilterBar filters={filters} options={filterOptions} setFilter={setFilter} />
@@ -43,15 +50,26 @@ export default function Home() {
           setFilter={setFilter}
           setCharacters={setCharacters}
           resetFilters={resetFilters}
+          open={filtersOpen}
+          onClose={closeFilters}
         />
 
-        <section className="w-full">
+        <section className="w-full min-w-0" aria-label="Replays">
+          <FilterToolbar
+            filters={filters}
+            onOpenFilters={() => setFiltersOpen(true)}
+            onRemoveFilter={removeFilter}
+            onClearAll={resetFilters}
+          />
+
           {feed.error ? (
             <p className="text-danger">{feed.error}</p>
           ) : (
-            <ReplayTable
+            <ReplayList
               rows={rows}
               isInitialLoading={feed.isInitialLoading}
+              hasFilters={describeActiveFilters(debouncedFilters).length > 0}
+              nowMs={nowMs}
               followSource={live.followSource}
               onFollow={live.followInSlippi}
               onStopFollowing={live.stopFollowing}
@@ -61,8 +79,8 @@ export default function Home() {
           {live.streamError ? <p className="text-danger">{live.streamError}</p> : null}
 
           <div ref={feed.sentinelRef} className="h-0.5" />
-          {feed.loading && feed.files.length > 0 ? <p>Loading more...</p> : null}
-          {!feed.hasMore && feed.files.length > 0 ? <p className="mt-0 text-muted">End of results.</p> : null}
+          {feed.loading && feed.files.length > 0 ? <p className="text-center text-muted">Loading more replays…</p> : null}
+          {!feed.hasMore && feed.files.length > 0 ? <p className="text-center text-[0.88rem] text-muted">That’s every replay.</p> : null}
         </section>
       </div>
     </main>

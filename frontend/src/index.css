@@ -17,6 +17,12 @@
   --color-live-fg: #ff7f7f;
   --color-danger: #c62828;
 
+  /* Controller port colours, matching assets/icons/port{1-4}.svg. */
+  --color-p1: #ef476f;
+  --color-p2: #118ab2;
+  --color-p3: #06d6a0;
+  --color-p4: #ffd166;
+
   /* Layout breakpoints match the original max-width queries (760px / 980px). */
   --breakpoint-md: 47.5rem;
   --breakpoint-lg: 61.25rem;
@@ -45,9 +51,18 @@
     overscroll-behavior-y: none;
   }
 
+  html {
+    color-scheme: dark;
+  }
+
   body {
     min-height: 100vh;
     color: var(--color-fg);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent-strong);
+    outline-offset: 2px;
   }
 }
 
@@ -72,19 +87,19 @@
   background-repeat: no-repeat;
 }
 
-/* Stage art behind a replay row: dark edges, indigo glow at both ends, art in the middle.
-   Set the image with style={{ "--stage-img": `url(...)` }}. */
+/* Stage art behind a replay row: a faint hint of the stage under a dark scrim, so
+   row text keeps its contrast. Set the image with style={{ "--stage-img": `url(...)` }}. */
 @utility stage-backdrop {
   background-image:
     linear-gradient(
       to right,
-      rgb(18 16 29 / 0.95) 18%,
-      rgb(18 16 29 / 0.62) 36%,
-      rgb(18 16 29 / 0.62) 64%,
-      rgb(18 16 29 / 0.95) 82%
+      rgb(18 16 29 / 0.96) 12%,
+      rgb(18 16 29 / 0.86) 32%,
+      rgb(18 16 29 / 0.86) 68%,
+      rgb(18 16 29 / 0.96) 88%
     ),
-    radial-gradient(circle at left center, rgb(107 92 177 / 0.44), transparent 44%),
-    radial-gradient(circle at right center, rgb(107 92 177 / 0.44), transparent 44%),
+    radial-gradient(circle at left center, rgb(107 92 177 / 0.28), transparent 44%),
+    radial-gradient(circle at right center, rgb(107 92 177 / 0.28), transparent 44%),
     var(--stage-img);
   background-repeat: no-repeat;
   background-position: center, left center, right center, center;

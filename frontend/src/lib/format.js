@@ -5,10 +5,11 @@ export function formatGameDuration(totalSeconds) {
     return "-";
   }
 
-  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  // e.g. "1m 30s".
+  const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
   const minutesPart = Math.floor(seconds / 60);
   const secondsPart = seconds % 60;
-  return `${minutesPart}m${secondsPart}s`;
+  return `${minutesPart}m ${secondsPart}s`;
 }
 
 // e.g. "Mar 4, 2025 - 7:05pm" in the viewer's local time zone.
@@ -31,6 +32,48 @@ export function formatPlayedDateTime(value) {
   hours = hours % 12 || 12;
 
   return `${month} ${day}, ${year} - ${hours}:${minutes}${period}`;
+}
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+// "Just now", "12 min ago", "3 hr ago", "Yesterday", "4 days ago", then a date
+// ("Mar 4", or "Mar 4, 2024" outside the current year).
+export function formatRelativeTime(value, nowMs) {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const elapsedMs = Math.max(0, nowMs - date.getTime());
+  if (elapsedMs < MINUTE_MS) {
+    return "Just now";
+  }
+  if (elapsedMs < HOUR_MS) {
+    return `${Math.floor(elapsedMs / MINUTE_MS)} min ago`;
+  }
+  if (elapsedMs < DAY_MS) {
+    return `${Math.floor(elapsedMs / HOUR_MS)} hr ago`;
+  }
+  const days = Math.floor(elapsedMs / DAY_MS);
+  if (days === 1) {
+    return "Yesterday";
+  }
+  if (days < 7) {
+    return `${days} days ago`;
+  }
+
+  const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
 }
 
 export function formatStageName(stageId) {
