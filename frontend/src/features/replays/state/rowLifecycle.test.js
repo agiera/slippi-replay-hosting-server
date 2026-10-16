@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { mergeReplayRows } from "./homeRowLifecycle.js";
+import { mergeReplayRows } from "./rowLifecycle.js";
 
 function isoNowMinus(ms) {
   return new Date(Date.now() - ms).toISOString();

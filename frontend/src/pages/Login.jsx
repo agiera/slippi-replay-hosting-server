@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { getGoogleLoginUrl, login, persistSession, signup } from "../lib/api";
+import { getGoogleLoginUrl, login, signup } from "../lib/api/auth";
+import { persistSession } from "../lib/api/session";
 
 export default function Login() {
   const [isSignup, setIsSignup] = useState(false);
@@ -21,7 +22,7 @@ export default function Login() {
         ? await signup({ username, email, password })
         : await login({ username, password });
       persistSession(data);
-      navigate("/dashboard");
+      navigate("/");
     } catch (err) {
       setError(err.message);
     } finally {

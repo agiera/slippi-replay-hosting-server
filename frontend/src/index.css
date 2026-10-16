@@ -1,0 +1,83 @@
+/*
+ * Tailwind v4 entry. Preflight (Tailwind's reset) is intentionally not loaded
+ * yet: the pre-Tailwind stylesheet still styles TopNav, Login and Settings and
+ * relies on browser defaults. It lives in the `legacy` layer, below utilities,
+ * so Tailwind classes always win where both apply. Once those pages are ported,
+ * drop styles.css and switch to a plain `@import "tailwindcss";`.
+ */
+@layer theme, base, legacy, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./styles.css" layer(legacy);
+
+@theme {
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+
+  --color-bg: #000000;
+  --color-surface: #12101d;
+  --color-surface-soft: #1a1728;
+  --color-panel: #0a0812;
+  --color-accent: #6b5cb1;
+  --color-accent-strong: #7d6fc2;
+  --color-accent-dim: #4a3f7f;
+  --color-fg: #f5f4ff;
+  --color-subtle: #d4ceef;
+  --color-muted: #b5afcf;
+  --color-live: #ff3b3b;
+  --color-live-fg: #ff7f7f;
+  --color-danger: #c62828;
+
+  /* Layout breakpoints match the original max-width queries (760px / 980px). */
+  --breakpoint-md: 47.5rem;
+  --breakpoint-lg: 61.25rem;
+
+  --animate-shimmer: shimmer 1.35s infinite;
+
+  @keyframes shimmer {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+}
+
+@layer base {
+  /* The one piece of preflight needed now: form controls use the page font. */
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+}
+
+:root {
+  /* Sticky offsets shared by the nav, the top filter bar and the sidebar. */
+  --top-nav-height: 46px;
+  --top-nav-border: 1px;
+  --top-filter-height: 56px;
+  --main-grid-gap-from-filter: 12px;
+  --sidebar-sticky-nudge: 1px;
+}
+
+/* Stage art behind a replay row: dark edges, indigo glow at both ends, art in the middle.
+   Set the image with style={{ "--stage-img": `url(...)` }}. */
+@utility stage-backdrop {
+  background-image:
+    linear-gradient(
+      to right,
+      rgb(18 16 29 / 0.95) 18%,
+      rgb(18 16 29 / 0.62) 36%,
+      rgb(18 16 29 / 0.62) 64%,
+      rgb(18 16 29 / 0.95) 82%
+    ),
+    radial-gradient(circle at left center, rgb(107 92 177 / 0.44), transparent 44%),
+    radial-gradient(circle at right center, rgb(107 92 177 / 0.44), transparent 44%),
+    var(--stage-img);
+  background-repeat: no-repeat;
+  background-position: center, left center, right center, center;
+  background-size: auto, 440px 180%, 440px 180%, 980px auto;
+}

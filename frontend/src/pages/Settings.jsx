@@ -4,9 +4,7 @@ import {
   createTournament,
   createRepository,
   createMyApiToken,
-  fetchMe,
   getTournamentSourceIds,
-  getStoredUser,
   listSources,
   listTournaments,
   listMyApiTokens,
@@ -17,7 +15,9 @@ import {
   updateTournamentSources,
   updateUserRole,
   updateUserRepositories,
-} from "../lib/api";
+} from "../lib/api/admin";
+import { fetchMe } from "../lib/api/auth";
+import { getStoredUser } from "../lib/api/session";
 
 const ROLE_OPTIONS = ["user", "uploader", "superuser"];
 const TOURNAMENT_PROVIDERS = [

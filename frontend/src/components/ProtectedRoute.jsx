@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet } from "react-router-dom";
 
-import { fetchMe, getAccessToken } from "../lib/api";
+import { fetchMe } from "../lib/api/auth";
+import { getAccessToken } from "../lib/api/session";
 
 export default function ProtectedRoute() {
   const [loading, setLoading] = useState(true);

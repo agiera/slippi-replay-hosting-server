@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 const allowedHosts = String(process.env.VITE_ALLOWED_HOSTS || "")
   .split(",")
@@ -7,7 +8,7 @@ const allowedHosts = String(process.env.VITE_ALLOWED_HOSTS || "")
   .filter(Boolean);
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
     allowedHosts,

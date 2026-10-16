@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeStreamEventPayload, normalizeStreamStatusPayload } from "./api.js";
+import { normalizeStreamEventPayload, normalizeStreamStatusPayload } from "./stream.js";
 
 test("normalizeStreamEventPayload maps slippi_code to connect_code and name fallback", () => {
   const normalized = normalizeStreamEventPayload({

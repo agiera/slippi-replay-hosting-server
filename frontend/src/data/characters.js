@@ -1,0 +1,31 @@
+// Character id -> name, matching peppi_py character_id values (Melee roster)
+export const CHARACTER_LIST = [
+  { id: 0, name: "Captain Falcon" },
+  { id: 1, name: "Donkey Kong" },
+  { id: 2, name: "Fox" },
+  { id: 3, name: "Mr. Game & Watch" },
+  { id: 4, name: "Kirby" },
+  { id: 5, name: "Bowser" },
+  { id: 6, name: "Link" },
+  { id: 7, name: "Luigi" },
+  { id: 8, name: "Mario" },
+  { id: 9, name: "Marth" },
+  { id: 10, name: "Mewtwo" },
+  { id: 11, name: "Ness" },
+  { id: 12, name: "Peach" },
+  { id: 13, name: "Pikachu" },
+  { id: 14, name: "Ice Climbers" },
+  { id: 15, name: "Jigglypuff" },
+  { id: 16, name: "Samus" },
+  { id: 17, name: "Yoshi" },
+  { id: 18, name: "Zelda" },
+  { id: 19, name: "Sheik" },
+  { id: 20, name: "Falco" },
+  { id: 21, name: "Young Link" },
+  { id: 22, name: "Dr. Mario" },
+  { id: 23, name: "Roy" },
+  { id: 24, name: "Pichu" },
+  { id: 25, name: "Ganondorf" },
+];
+
+export const CHARACTER_BY_ID = new Map(CHARACTER_LIST.map((character) => [character.id, character]));

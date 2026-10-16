@@ -1,20 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { getAccessToken, logout } from "../lib/api";
-
-const SLIPPILAB_URL = (() => {
-  const configured = String(import.meta.env.VITE_SLIPPILAB_URL || "").trim();
-  if (configured) {
-    return configured.replace(/\/$/, "");
-  }
-
-  if (typeof window !== "undefined" && window.location?.origin) {
-    return `${window.location.origin.replace(/\/$/, "")}/slippilab`;
-  }
-
-  return "";
-})();
+import { SLIPPILAB_URL } from "../config/env";
+import { logout } from "../lib/api/auth";
+import { getAccessToken } from "../lib/api/session";
 
 export default function TopNav() {
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getAccessToken()));

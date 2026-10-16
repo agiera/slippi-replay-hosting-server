@@ -1,4 +1,4 @@
-import { normalizeStreamStatusPayload } from "../lib/api.js";
+import { normalizeStreamStatusPayload } from "../../../lib/api/stream.js";
 
 const REFRESH_STATUSES = new Set(["pending_parse", "slippi_file_metadata", "ended", "completed"]);
 
