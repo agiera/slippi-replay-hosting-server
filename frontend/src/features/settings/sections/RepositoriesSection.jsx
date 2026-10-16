@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { Input } from "../../../components/ui/Input";
 import { Table } from "../../../components/ui/Table";
@@ -21,24 +22,27 @@ export function RepositoriesSection({ repositories, setRepositories, run }) {
 
   return (
     <>
-      <SectionTitle className="mt-0">Repository Management</SectionTitle>
-      <form className="mb-2.5 grid grid-cols-[1fr_auto] gap-2" onSubmit={onCreateRepository}>
+      <SectionTitle>Repository Management</SectionTitle>
+      <form className="mt-4 flex gap-2" onSubmit={onCreateRepository}>
         <Input
+          className="flex-1"
           value={newName}
           onChange={(event) => setNewName(event.target.value)}
           placeholder="New repository name"
           aria-label="New repository name"
         />
-        <Button type="submit" size="lg">
+        <Button type="submit">
           Create Repository
         </Button>
       </form>
 
-      <Table headers={["Name", "Visibility"]}>
+      <Table className="mt-4" headers={["Name", "Visibility"]}>
         {repositories.map((repo) => (
           <tr key={repo.id}>
             <td>{repo.name}</td>
-            <td>{repo.is_public ? "Public" : "Private"}</td>
+            <td>
+              <Badge color={repo.is_public ? "green" : "gray"}>{repo.is_public ? "Public" : "Private"}</Badge>
+            </td>
           </tr>
         ))}
       </Table>

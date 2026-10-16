@@ -1,19 +1,18 @@
 import { getStageImage } from "../../../assets";
+import { Badge } from "../../../components/ui/Badge";
 import { cn } from "../../../lib/cn";
 import { formatGameDuration, formatPlayedDateTime, formatRelativeTime, formatStageName } from "../../../lib/format";
 import { getRowPlayers } from "../players";
-import { LivePill } from "./LivePill";
 import { PlayerCell } from "./PlayerCell";
 import { RowActions } from "./RowActions";
 
-// Desktop columns: where/source | players (two per line) | stage and time | actions.
-// Below `md` the row stacks: where + stage on top, players in two columns, actions last.
-export const ROW_GRID =
-  "grid grid-cols-2 items-center gap-x-4 gap-y-3 px-3 py-3 " +
-  "md:grid-cols-[6.5rem_minmax(0,1fr)_7.5rem_8.5rem] md:py-4";
-
-export const PLAYER_GROUP =
-  "col-span-2 grid grid-cols-2 gap-x-4 gap-y-3 max-md:order-1 md:col-span-1";
+// A 12-column grid. Desktop: where/source (2) | players, two per line (6) | stage and time (2) | actions (2).
+// Below `md` the row stacks: where + stage side by side, then players, then actions.
+export const ROW_GRID = "grid grid-cols-12 items-center gap-x-3 gap-y-4 bg-clip-padding px-4 py-4 sm:px-6";
+export const META_CELL = "col-span-6 grid min-w-0 content-center gap-0.5 md:col-span-2";
+export const PLAYER_GROUP = "col-span-12 grid grid-cols-2 gap-x-4 gap-y-3 max-md:order-1 md:col-span-6";
+export const STAGE_CELL = "col-span-6 grid min-w-0 content-center gap-0.5 max-md:text-right md:col-span-2";
+export const ACTION_CELL = "col-span-12 max-md:order-2 md:col-span-2";
 
 export function ReplayRow({ row, nowMs, followSource, onFollow, onStopFollowing }) {
   const isStreaming = row.lifecycle === "live" || row.lifecycle === "finalizing";
@@ -28,19 +27,23 @@ export function ReplayRow({ row, nowMs, followSource, onFollow, onStopFollowing 
 
   return (
     <li
-      className={cn(ROW_GRID, "border-b border-accent/40 bg-clip-padding last:border-b-0", stageImage && "stage-backdrop")}
+      className={cn(ROW_GRID, stageImage && "stage-backdrop")}
       style={stageImage ? { "--stage-img": `url(${stageImage})` } : undefined}
     >
-      <div className="grid min-w-0 content-center gap-0.5">
+      <div className={META_CELL}>
         {isStreaming ? (
-          <div className="mb-0.5">
-            <LivePill>{row.lifecycle === "finalizing" ? "Finalizing" : "Live"}</LivePill>
+          <div className="mb-1">
+            {row.lifecycle === "finalizing" ? (
+              <Badge color="yellow" dot>Finalizing</Badge>
+            ) : (
+              <Badge color="red" dot>Live</Badge>
+            )}
           </div>
         ) : null}
-        <div className="truncate leading-tight font-bold text-fg" title={row.repository_label || undefined}>
+        <p className="truncate text-sm font-semibold text-white" title={row.repository_label || undefined}>
           {row.repository_label || "-"}
-        </div>
-        <div className="truncate text-[0.78rem] leading-tight text-subtle">{row.source_label || "-"}</div>
+        </p>
+        <p className="truncate text-xs text-gray-400">{row.source_label || "-"}</p>
       </div>
 
       <div className={PLAYER_GROUP}>
@@ -49,25 +52,25 @@ export function ReplayRow({ row, nowMs, followSource, onFollow, onStopFollowing 
         ))}
       </div>
 
-      <div className="grid min-w-0 content-center gap-0.5 max-md:text-right">
-        <div className="line-clamp-2 leading-tight font-semibold text-fg" title={stageLabel}>
+      <div className={STAGE_CELL}>
+        <p className="line-clamp-2 text-sm font-medium text-white" title={stageLabel}>
           {stageLabel}
-        </div>
+        </p>
         {hasDuration ? (
-          <div className="text-[0.8rem] leading-tight text-subtle tabular-nums">{formatGameDuration(row.game_duration)}</div>
+          <p className="text-xs text-gray-400 tabular-nums">{formatGameDuration(row.game_duration)}</p>
         ) : null}
         {row.start_datetime ? (
           <time
             dateTime={row.start_datetime}
             title={formatPlayedDateTime(row.start_datetime)}
-            className="text-[0.8rem] leading-tight text-subtle"
+            className="text-xs text-gray-400"
           >
             {formatRelativeTime(row.start_datetime, nowMs)}
           </time>
         ) : null}
       </div>
 
-      <div className="col-span-2 max-md:order-2 md:col-span-1">
+      <div className={ACTION_CELL}>
         <RowActions row={row} followSource={followSource} onFollow={onFollow} onStopFollowing={onStopFollowing} />
       </div>
     </li>

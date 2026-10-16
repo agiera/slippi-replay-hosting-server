@@ -28,11 +28,11 @@ export function CostumePicker({ selectedCharacters, selectedCostumes, onChange }
   }
 
   if (selectedCharacters.length === 0) {
-    return <p className="m-0 text-[0.8rem] text-muted">Pick a character to filter by costume.</p>;
+    return <p className="text-xs text-gray-400">Pick a character to filter by costume.</p>;
   }
 
   return (
-    <div className="grid gap-1.5 rounded-lg border border-accent/25 bg-surface-soft/60 p-1.5" role="group" aria-label="Costumes">
+    <div className="grid gap-1.5 rounded-md bg-white/5 p-1.5 ring-1 ring-inset ring-white/10" role="group" aria-label="Costumes">
       {selectedCharacters.map((characterId) => {
         const characterName = CHARACTER_BY_ID.get(characterId)?.name || `Character ${characterId}`;
         const activeCostumes = selections.get(characterId) || new Set();

@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 
 import { cn } from "../../lib/cn";
+import { CheckIcon, ChevronDownIcon } from "./icons";
+import { FIELD_CLASS } from "./Input";
 import { useDismiss } from "./useDismiss";
 
 const splitValues = (value) =>
@@ -55,30 +57,27 @@ export function MultiSelect({ label, selected, options, onChange }) {
         type="button"
         aria-expanded={open}
         className={cn(
-          "flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-lg border border-accent/35",
-          "bg-surface-soft px-2.5 py-2 font-semibold text-fg hover:border-accent-strong",
-          open && "border-accent-strong",
+          "flex w-full cursor-pointer items-center gap-2 rounded-md bg-white/5 py-1.5 pr-2 pl-3 text-left text-sm/6",
+          "outline-1 -outline-offset-1 outline-white/10 hover:bg-white/10",
+          "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500",
         )}
         onClick={() => setOpen((prev) => !prev)}
       >
-        <span className="text-[0.85rem] text-muted">{label}</span>
-        <span className="max-w-[56%] truncate text-[0.85rem]">{summary}</span>
+        <span className="text-gray-400">{label}</span>
+        <span className="ml-auto truncate font-medium text-white">{summary}</span>
+        <ChevronDownIcon className="size-4 shrink-0 text-gray-400" />
       </button>
       {open ? (
-        <div
-          className={cn(
-            "absolute top-[calc(100%+6px)] left-0 z-30 w-full min-w-0 md:min-w-[260px]",
-            "rounded-[10px] border border-accent/35 bg-panel/98 p-2 shadow-[0_10px_28px_rgb(0_0_0/0.52)] backdrop-blur-sm",
-          )}
-        >
+        <div className="absolute inset-x-0 z-30 mt-1 rounded-md bg-gray-800 p-2 shadow-lg ring-1 ring-white/10">
           <input
-            className="w-full rounded-lg border border-accent/35 bg-surface-soft px-2 py-[7px] text-[0.86rem] text-fg focus:border-accent-strong focus:outline-none"
+            className={cn(FIELD_CLASS, "px-2.5 py-1")}
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={`Search ${label.toLowerCase()}`}
+            aria-label={`Search ${label.toLowerCase()}`}
           />
-          <div className="mt-2 grid max-h-[220px] gap-[5px] overflow-auto">
+          <div className="mt-2 max-h-60 overflow-auto">
             {filteredOptions.map((option) => {
               const isSelected = selectedValues.has(option);
               return (
@@ -87,25 +86,22 @@ export function MultiSelect({ label, selected, options, onChange }) {
                   key={option}
                   aria-pressed={isSelected}
                   className={cn(
-                    "grid w-full cursor-pointer grid-cols-[20px_minmax(0,1fr)] items-center gap-2 rounded-lg border",
-                    "px-2 py-1.5 text-left font-semibold text-fg hover:border-accent-dim hover:bg-accent/20",
-                    isSelected ? "border-accent-dim bg-accent/20" : "border-transparent bg-transparent",
+                    "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-white",
+                    "hover:bg-indigo-500",
                   )}
                   onClick={() => toggleValue(option)}
                 >
-                  <span aria-hidden="true">{isSelected ? "☑" : "☐"}</span>
-                  <span>{option}</span>
+                  <span className={cn("truncate", isSelected && "font-semibold")}>{option}</span>
+                  {isSelected ? <CheckIcon className="ml-auto size-4 shrink-0 text-indigo-300" /> : null}
                 </button>
               );
             })}
-            {filteredOptions.length === 0 ? (
-              <div className="px-1 py-1.5 text-[0.84rem] text-muted">No matches</div>
-            ) : null}
+            {filteredOptions.length === 0 ? <p className="px-2 py-1.5 text-sm text-gray-400">No matches</p> : null}
           </div>
           {selectedValues.size > 0 ? (
             <button
               type="button"
-              className="mt-2 w-full cursor-pointer rounded-lg border border-accent/35 bg-transparent px-2 py-1.5 text-[0.82rem] font-semibold text-muted hover:bg-accent-strong hover:text-fg"
+              className="mt-2 w-full cursor-pointer rounded-md px-2 py-1.5 text-sm font-semibold text-gray-300 hover:bg-white/5 hover:text-white"
               onClick={() => onChange("")}
             >
               Clear

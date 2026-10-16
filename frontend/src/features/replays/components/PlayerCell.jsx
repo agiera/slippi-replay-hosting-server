@@ -15,23 +15,23 @@ export function PlayerCell({ player }) {
   const name = isCpu && displayName === "-" ? "CPU" : displayName;
 
   return (
-    <div className="flex min-w-0 items-center gap-2.5">
+    <div className="flex min-w-0 items-center gap-3">
       <div className="flex size-8 shrink-0 items-center justify-center">
         {characterImage ? (
-          <img src={characterImage} alt="" className="size-8 object-contain [image-rendering:pixelated]" />
+          <img src={characterImage} alt="" className="pixelated size-8 object-contain" />
         ) : null}
       </div>
       <div className="grid min-w-0 gap-px">
         <div className="flex min-w-0 items-center gap-1">
-          <span className="truncate font-semibold text-fg" title={name}>
+          <span className="truncate text-sm font-semibold text-white" title={name}>
             {name}
           </span>
-          {isCpu && name !== "CPU" ? <span className="shrink-0 text-[0.72rem] text-muted">CPU</span> : null}
+          {isCpu && name !== "CPU" ? <span className="shrink-0 text-xs text-gray-400">CPU</span> : null}
           {isWinner ? <img src={crownImage} alt="Winner" title="Winner" className="size-3.5 shrink-0 object-contain" /> : null}
         </div>
-        {isCpu ? null : <div className="truncate text-[0.76rem] text-subtle">{connectCode}</div>}
+        {isCpu ? null : <div className="truncate text-xs text-gray-400">{connectCode}</div>}
         {rankImage || player.rating != null ? (
-          <div className="flex items-center gap-1 text-[0.8rem] font-medium text-subtle tabular-nums">
+          <div className="flex items-center gap-1 text-xs font-medium text-gray-300 tabular-nums">
             {rankImage ? (
               <img src={rankImage} alt={String(player.rank).replace(/_/g, " ")} className="size-4 object-contain" />
             ) : null}
@@ -42,7 +42,7 @@ export function PlayerCell({ player }) {
           {PORT_SLOTS.map((slot) => (
             <span
               key={slot}
-              className={cn("size-[7px] rounded-full", slot === port ? PORT_DOT_COLORS[slot] : "bg-muted/30")}
+              className={cn("size-1.5 rounded-full", slot === port ? PORT_DOT_COLORS[slot] : "bg-white/15")}
             />
           ))}
         </div>

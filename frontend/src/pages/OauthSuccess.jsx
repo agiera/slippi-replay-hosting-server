@@ -20,5 +20,5 @@ export default function OauthSuccess() {
     navigate("/login", { replace: true });
   }, [location.search, navigate]);
 
-  return <p className="p-6 text-muted">Signing you in...</p>;
+  return <p className="p-6 text-sm text-gray-400">Signing you in...</p>;
 }

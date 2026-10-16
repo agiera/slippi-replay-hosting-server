@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { Button } from "../../../components/ui/Button";
+import { XMarkIcon } from "../../../components/ui/icons";
 import { Input } from "../../../components/ui/Input";
 import { useDismiss } from "../../../components/ui/useDismiss";
 import { cn } from "../../../lib/cn";
@@ -39,25 +40,31 @@ export function FilterSidebar({ filters, setFilter, setCharacters, resetFilters,
 
   return (
     <>
-      {open ? <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" aria-hidden="true" /> : null}
+      {open ? <div className="fixed inset-0 z-40 bg-gray-950/75 lg:hidden" aria-hidden="true" /> : null}
       <aside
         ref={panelRef}
         aria-label="Filters"
         className={cn(
-          "lg:sticky lg:z-[2] lg:block lg:top-[calc(var(--top-nav-height)+var(--top-nav-border)+var(--top-filter-height)+var(--main-grid-gap-from-filter)+var(--sidebar-sticky-nudge))]",
+          // Sticky offset: nav (h-14) + collections bar (h-16) + the page's top padding (py-6).
+          "lg:sticky lg:top-36 lg:z-10 lg:block",
           open
-            ? "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[min(320px,88vw)] max-lg:overflow-y-auto max-lg:border-r max-lg:border-accent/35 max-lg:bg-surface max-lg:p-4"
+            ? "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-full max-lg:max-w-xs max-lg:overflow-y-auto max-lg:bg-gray-900 max-lg:p-4 max-lg:shadow-xl max-lg:ring-1 max-lg:ring-white/10"
             : "hidden",
         )}
       >
-        <div className="mb-3 flex items-center justify-between lg:hidden">
-          <h2 className="m-0 text-base font-semibold">Filters</h2>
-          <Button variant="secondary" size="sm" onClick={onClose}>
-            Done
-          </Button>
+        <div className="mb-4 flex items-center justify-between lg:hidden">
+          <h2 className="text-lg font-semibold text-white">Filters</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="-mr-2 flex size-10 cursor-pointer items-center justify-center rounded-md text-gray-400 hover:bg-white/5 hover:text-white"
+          >
+            <span className="sr-only">Close filters</span>
+            <XMarkIcon className="size-5" />
+          </button>
         </div>
 
-        <form className="grid gap-4" onSubmit={(event) => event.preventDefault()}>
+        <form className="space-y-6" onSubmit={(event) => event.preventDefault()}>
           <FieldGroup legend="Search">
             <Input placeholder="Keyword" aria-label="Keyword" {...bindInput("keyword")} />
             <Input placeholder="Player name or code" aria-label="Player" {...bindInput("player")} />
@@ -87,18 +94,18 @@ export function FilterSidebar({ filters, setFilter, setCharacters, resetFilters,
             </div>
           </FieldGroup>
 
-          <label className="flex cursor-pointer items-center gap-2 text-[0.88rem] text-subtle">
+          <label className="flex cursor-pointer items-center gap-3 text-sm text-gray-300">
             <input
               name="include_handwarmers"
               type="checkbox"
-              className="m-0 size-4 accent-accent-strong"
+              className="size-4 cursor-pointer rounded-sm accent-indigo-500"
               checked={filters.include_handwarmers === "1"}
               onChange={(event) => setFilter("include_handwarmers", event.target.checked ? "1" : "")}
             />
             Include hand warmers
           </label>
 
-          <Button variant="ghost" size="sm" className="w-full" onClick={resetFilters}>
+          <Button variant="secondary" className="w-full" onClick={resetFilters}>
             Clear all
           </Button>
         </form>
@@ -109,8 +116,8 @@ export function FilterSidebar({ filters, setFilter, setCharacters, resetFilters,
 
 function FieldGroup({ legend, children }) {
   return (
-    <fieldset className="m-0 grid min-w-0 gap-2 border-0 p-0">
-      <legend className="mb-1.5 p-0 text-[0.8rem] font-semibold text-muted">{legend}</legend>
+    <fieldset className="grid min-w-0 gap-2">
+      <legend className="mb-2 text-sm/6 font-medium text-white">{legend}</legend>
       {children}
     </fieldset>
   );

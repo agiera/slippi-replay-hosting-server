@@ -15,7 +15,9 @@ import { VisibilityToggle } from "../components/VisibilityToggle";
 import { TOURNAMENT_PROVIDERS } from "../constants";
 import { replaceById, sortByName, toggleId } from "../listUtils";
 
-const WIDE_FORM = "mb-2.5 grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2";
+// A wrapping row: fields share the width, the switch and button keep their natural size.
+const WIDE_FORM = "flex flex-wrap items-center gap-x-3 gap-y-2";
+const WIDE_FIELD = "min-w-40 flex-1";
 
 function ProviderOptions() {
   return TOURNAMENT_PROVIDERS.map((provider) => (
@@ -68,22 +70,24 @@ function CreateTournamentForm({ setTournaments, run }) {
       />
       <form className={WIDE_FORM} onSubmit={onSubmit}>
         <Input
+          className={WIDE_FIELD}
           value={name}
           onChange={(event) => setName(event.target.value)}
           placeholder="New tournament series name"
           aria-label="New tournament series name"
         />
-        <Select value={provider} onChange={(event) => setProvider(event.target.value)} aria-label="Provider">
+        <Select className={WIDE_FIELD} value={provider} onChange={(event) => setProvider(event.target.value)} aria-label="Provider">
           <ProviderOptions />
         </Select>
         <Input
+          className={WIDE_FIELD}
           value={slug}
           onChange={(event) => setSlug(event.target.value)}
           placeholder="Tournament slug (optional)"
           aria-label="Tournament slug"
         />
         <VisibilityToggle active={isPublic} onToggle={() => setIsPublic((prev) => !prev)} />
-        <Button type="submit" size="lg">
+        <Button type="submit">
           Create Tournament
         </Button>
       </form>
@@ -140,8 +144,8 @@ function EditTournamentForm({ tournaments, setTournaments, sources, run }) {
         title="Save Existing Tournament Series"
         description="Select an existing series to update source assignments and metadata."
       />
-      <div className="mb-2.5 grid grid-cols-[1fr_auto] gap-2">
-        <Select value={selectedId} onChange={(event) => onSelect(event.target.value)} aria-label="Tournament series">
+      <div className="mb-2 flex gap-2">
+        <Select className="flex-1" value={selectedId} onChange={(event) => onSelect(event.target.value)} aria-label="Tournament series">
           <option value="">Select tournament</option>
           {tournaments.map((tournament) => (
             <option key={tournament.id} value={tournament.id}>
@@ -149,13 +153,14 @@ function EditTournamentForm({ tournaments, setTournaments, sources, run }) {
             </option>
           ))}
         </Select>
-        <Button size="lg" onClick={onSaveSources} disabled={disabled}>
+        <Button onClick={onSaveSources} disabled={disabled}>
           Save Sources
         </Button>
       </div>
 
       <div className={WIDE_FORM}>
         <Select
+          className={WIDE_FIELD}
           value={provider}
           onChange={(event) => setProvider(event.target.value)}
           disabled={disabled}
@@ -164,31 +169,31 @@ function EditTournamentForm({ tournaments, setTournaments, sources, run }) {
           <ProviderOptions />
         </Select>
         <Input
+          className={WIDE_FIELD}
           value={slug}
           onChange={(event) => setSlug(event.target.value)}
           placeholder="Tournament slug"
           aria-label="Tournament slug"
           disabled={disabled}
-          className="disabled:cursor-not-allowed disabled:opacity-65"
         />
         <VisibilityToggle active={isPublic} onToggle={() => setIsPublic((prev) => !prev)} disabled={disabled} />
-        <Button size="lg" onClick={onSaveMetadata} disabled={disabled}>
+        <Button onClick={onSaveMetadata} disabled={disabled}>
           Save Tournament Metadata
         </Button>
       </div>
 
       {selected ? (
-        <Hint>Current resolved tournament name: {selected.current_tournament_name || "not resolved"}</Hint>
+        <Hint className="mt-3">Current resolved tournament name: {selected.current_tournament_name || "not resolved"}</Hint>
       ) : null}
 
-      <Table headers={["Use", "Source", "Owner", "Token Prefix"]}>
+      <Table className="mt-2" headers={["Use", "Source", "Owner", "Token Prefix"]}>
         {sources.length === 0 ? <EmptyRow colSpan={4}>No sources found.</EmptyRow> : null}
         {sources.map((source) => (
           <tr key={source.id}>
             <td>
               <input
                 type="checkbox"
-                className="m-0 cursor-pointer disabled:cursor-not-allowed"
+                className="size-4 cursor-pointer rounded-sm accent-indigo-500 disabled:cursor-not-allowed"
                 checked={sourceIds.includes(source.id)}
                 onChange={() => setSourceIds((prev) => toggleId(prev, source.id))}
                 disabled={disabled}

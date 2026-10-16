@@ -1,9 +1,10 @@
 import { Button } from "../../../components/ui/Button";
+import { FunnelIcon, XMarkIcon } from "../../../components/ui/icons";
 import { describeActiveFilters } from "../filters";
 
 /**
  * Row above the replay list: the "Filters" drawer button (narrow layouts only)
- * and one removable chip per active filter. Renders nothing on desktop when no
+ * and one removable badge per active filter. Renders nothing on desktop when no
  * filters are set.
  */
 export function FilterToolbar({ filters, onOpenFilters, onRemoveFilter, onClearAll }) {
@@ -11,11 +12,12 @@ export function FilterToolbar({ filters, onOpenFilters, onRemoveFilter, onClearA
   const hasFilters = activeFilters.length > 0;
 
   return (
-    <div className={hasFilters ? "mb-3 flex flex-wrap items-center gap-1.5" : "mb-3 flex lg:hidden"}>
-      <Button variant="secondary" size="sm" className="gap-1.5 text-fg lg:hidden" onClick={onOpenFilters}>
+    <div className={hasFilters ? "mb-4 flex flex-wrap items-center gap-2" : "mb-4 flex lg:hidden"}>
+      <Button variant="secondary" size="sm" className="lg:hidden" onClick={onOpenFilters}>
+        <FunnelIcon className="size-4 text-gray-400" />
         Filters
         {hasFilters ? (
-          <span className="rounded-full bg-accent px-1.5 text-[0.72rem] leading-[1.15rem] tabular-nums">
+          <span className="rounded-full bg-indigo-500 px-1.5 text-xs/5 font-semibold tabular-nums">
             {activeFilters.length}
           </span>
         ) : null}
@@ -23,18 +25,18 @@ export function FilterToolbar({ filters, onOpenFilters, onRemoveFilter, onClearA
 
       {hasFilters ? (
         <>
-          <ul className="m-0 flex list-none flex-wrap gap-1.5 p-0" aria-label="Active filters">
+          <ul className="flex flex-wrap gap-2" aria-label="Active filters">
             {activeFilters.map(({ key, label }) => (
               <li key={key}>
-                <span className="inline-flex items-center rounded-full border border-accent/40 bg-accent/14 py-0.5 pr-0.5 pl-2.5 text-[0.8rem] font-medium text-subtle">
+                <span className="inline-flex items-center gap-x-0.5 rounded-md bg-gray-400/10 py-1 pr-1 pl-2 text-xs font-medium text-gray-300 ring-1 ring-inset ring-gray-400/20">
                   {label}
                   <button
                     type="button"
                     onClick={() => onRemoveFilter(key)}
-                    aria-label={`Remove filter: ${label}`}
-                    className="ml-1 flex size-5 cursor-pointer items-center justify-center rounded-full text-[0.7rem] text-muted hover:bg-accent/40 hover:text-fg"
+                    className="relative ml-0.5 cursor-pointer rounded-sm p-0.5 text-gray-400 hover:bg-gray-500/30 hover:text-white"
                   >
-                    <span aria-hidden="true">✕</span>
+                    <span className="sr-only">Remove filter: {label}</span>
+                    <XMarkIcon className="size-3.5" />
                   </button>
                 </span>
               </li>
@@ -43,7 +45,7 @@ export function FilterToolbar({ filters, onOpenFilters, onRemoveFilter, onClearA
           <button
             type="button"
             onClick={onClearAll}
-            className="cursor-pointer rounded px-1.5 text-[0.8rem] font-semibold text-muted underline-offset-2 hover:text-fg hover:underline"
+            className="cursor-pointer rounded-md px-1.5 text-sm font-semibold text-indigo-400 hover:text-indigo-300"
           >
             Clear all
           </button>

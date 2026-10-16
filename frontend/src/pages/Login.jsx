@@ -9,10 +9,12 @@ import { persistSession } from "../lib/api/session";
 
 function Field({ id, label, ...inputProps }) {
   return (
-    <>
-      <label htmlFor={id}>{label}</label>
-      <Input id={id} {...inputProps} />
-    </>
+    <div>
+      <label htmlFor={id} className="block text-sm/6 font-medium text-white">
+        {label}
+      </label>
+      <Input id={id} className="mt-2" {...inputProps} />
+    </div>
   );
 }
 
@@ -43,12 +45,12 @@ export default function Login() {
   }
 
   return (
-    <main className="grid min-h-[calc(100vh-46px)] place-items-center p-6">
-      <Card className="max-w-[520px]">
-        <h1 className="mb-4 text-[2rem] leading-tight font-bold">{isSignup ? "Create Account" : "Welcome Back"}</h1>
-        <p className="mb-4 text-muted">FastAPI + React starter with local + Google auth</p>
+    <main className="px-4 py-16 sm:px-6 sm:py-24 lg:px-8">
+      <Card className="mx-auto max-w-md sm:p-10">
+        <h1 className="text-2xl/9 font-bold tracking-tight text-white">{isSignup ? "Create Account" : "Welcome Back"}</h1>
+        <p className="mt-1 text-sm/6 text-gray-400">FastAPI + React starter with local + Google auth</p>
 
-        <form className="grid gap-2" onSubmit={onSubmit}>
+        <form className="mt-8 space-y-5" onSubmit={onSubmit}>
           <Field
             id="login-username"
             label="Username"
@@ -81,30 +83,29 @@ export default function Login() {
           />
 
           {error ? (
-            <p className="my-2 text-danger" role="alert">
+            <p className="text-sm text-red-400" role="alert">
               {error}
             </p>
           ) : null}
 
-          <Button type="submit" size="lg" className="w-full" disabled={loading}>
+          <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Please wait..." : isSignup ? "Sign Up" : "Log In"}
           </Button>
         </form>
 
         <Button
-          variant="ghost"
-          size="lg"
-          className="mt-3 w-full"
+          variant="secondary"
+          className="mt-4 w-full"
           onClick={() => (window.location.href = getGoogleLoginUrl())}
         >
           Continue with Google
         </Button>
 
-        <p className="mt-3">
+        <p className="mt-8 text-center text-sm/6 text-gray-400">
           {isSignup ? "Already have an account?" : "Need an account?"}{" "}
           <button
             type="button"
-            className="cursor-pointer bg-transparent p-0 font-semibold text-accent-strong hover:underline"
+            className="cursor-pointer font-semibold text-indigo-400 hover:text-indigo-300"
             onClick={() => setIsSignup(!isSignup)}
           >
             {isSignup ? "Log In" : "Sign Up"}

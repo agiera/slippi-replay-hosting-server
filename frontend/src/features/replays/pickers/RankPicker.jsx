@@ -32,7 +32,6 @@ export function RankPicker({ selected, onChange }) {
       label="Rank"
       selectedIcons={selectedIcons}
       onClear={selectedValues.length > 0 ? () => onChange("") : null}
-      menuClassName="min-w-[320px] max-w-[min(560px,calc(100vw-24px))]"
     >
       {RANK_LIST.map((rankName) => (
         <IconChip

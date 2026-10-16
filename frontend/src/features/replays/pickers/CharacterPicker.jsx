@@ -26,7 +26,7 @@ export function CharacterPicker({ selected, onChange }) {
         key={character.id}
         src={icon}
         alt={character.name}
-        className="size-5 object-contain [image-rendering:pixelated]"
+        className="pixelated size-5 object-contain"
       />
     ) : null;
   });

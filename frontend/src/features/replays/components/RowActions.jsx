@@ -2,14 +2,14 @@ import { Button, ButtonLink } from "../../../components/ui/Button";
 import { buildSlippiDeepLink, buildSlippiLabViewerUrl, resolveReplayDownloadUrl } from "../../../lib/links";
 
 const TEXT_LINK =
-  "cursor-pointer rounded border-0 bg-transparent p-0 text-[0.8rem] font-semibold text-muted no-underline " +
-  "underline-offset-2 hover:text-fg hover:underline aria-disabled:pointer-events-none aria-disabled:opacity-50";
+  "cursor-pointer text-xs font-semibold text-gray-400 hover:text-white " +
+  "aria-disabled:pointer-events-none aria-disabled:opacity-50";
 
 // Actions for a row: follow a live stream, wait while finalizing, or open/download a replay.
 // One button for the main action, smaller text links for the rest.
 export function RowActions({ row, followSource, onFollow, onStopFollowing }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 md:grid md:justify-items-stretch">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 md:grid md:justify-items-stretch">
       {row.lifecycle === "live" ? (
         <LiveActions row={row} followSource={followSource} onFollow={onFollow} onStopFollowing={onStopFollowing} />
       ) : row.lifecycle === "finalizing" ? (

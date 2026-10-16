@@ -25,10 +25,8 @@ export function UsersSection({ me, users, repositories, applyUserUpdate, run }) 
             <td>{user.email}</td>
             <td>
               <Select
-                className={
-                  "w-auto border-accent-strong bg-accent py-1 pr-7 pl-2 text-[0.88rem] text-white " +
-                  "disabled:border-[#76708f] disabled:bg-[#5a5570] disabled:text-[#ddd7f3] disabled:opacity-100"
-                }
+                size="sm"
+                className="w-32"
                 value={user.role}
                 onChange={(event) => onRoleChange(user.id, event.target.value)}
                 disabled={user.id === me.id}

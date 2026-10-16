@@ -1,14 +1,16 @@
+import { FunnelIcon } from "../../../components/ui/icons";
 import { cn } from "../../../lib/cn";
-import { PLAYER_GROUP, ROW_GRID, ReplayRow } from "./ReplayRow";
+import { ACTION_CELL, META_CELL, PLAYER_GROUP, ROW_GRID, STAGE_CELL, ReplayRow } from "./ReplayRow";
 
 const SKELETON_ROWS = 6;
 
 export function ReplayList({ rows, isInitialLoading, hasFilters, nowMs, followSource, onFollow, onStopFollowing }) {
   if (!isInitialLoading && rows.length === 0) {
     return (
-      <div className="bg-surface px-5 py-10 text-center">
-        <p className="m-0 font-semibold text-fg">No replays found</p>
-        <p className="m-0 mt-1 text-[0.9rem] text-muted">
+      <div className="bg-gray-900 px-6 py-12 text-center">
+        <FunnelIcon className="mx-auto size-8 text-gray-500" />
+        <h3 className="mt-2 text-sm font-semibold text-white">No replays found</h3>
+        <p className="mt-1 text-sm text-gray-400">
           {hasFilters ? "Try removing a filter." : "Replays appear here once a Wii uploads them."}
         </p>
       </div>
@@ -16,10 +18,7 @@ export function ReplayList({ rows, isInitialLoading, hasFilters, nowMs, followSo
   }
 
   return (
-    <ul
-      className="m-0 list-none bg-surface p-0"
-      aria-busy={isInitialLoading || undefined}
-    >
+    <ul className="divide-y divide-white/10 bg-gray-900" aria-busy={isInitialLoading || undefined}>
       {isInitialLoading ? <SkeletonRows /> : null}
       {rows.map((row) => (
         <ReplayRow
@@ -36,42 +35,33 @@ export function ReplayList({ rows, isInitialLoading, hasFilters, nowMs, followSo
 }
 
 function SkeletonBar({ className }) {
-  return (
-    <div
-      className={cn(
-        "relative h-3 overflow-hidden rounded-full bg-accent/22",
-        "after:absolute after:inset-0 after:-translate-x-full after:animate-shimmer motion-reduce:after:animate-none",
-        "after:bg-linear-to-r after:from-white/0 after:via-white/20 after:to-white/0",
-        className,
-      )}
-    />
-  );
+  return <div className={cn("h-3 rounded-full bg-white/10", className)} />;
 }
 
 function SkeletonRows() {
   return Array.from({ length: SKELETON_ROWS }).map((_, rowIdx) => (
-    <li key={`loading-${rowIdx}`} className={cn(ROW_GRID, "border-b border-accent/40 bg-clip-padding last:border-b-0")} aria-hidden="true">
-      <div className="grid gap-2">
-        <SkeletonBar className="w-[80%]" />
-        <SkeletonBar className="w-[50%]" />
+    <li key={`loading-${rowIdx}`} className={cn(ROW_GRID, "animate-pulse motion-reduce:animate-none")} aria-hidden="true">
+      <div className={cn(META_CELL, "gap-2")}>
+        <SkeletonBar className="w-4/5" />
+        <SkeletonBar className="w-1/2" />
       </div>
       <div className={PLAYER_GROUP}>
         {Array.from({ length: 2 }).map((__, idx) => (
-          <div key={idx} className="flex items-center gap-2.5">
-            <div className="size-8 shrink-0 rounded-full bg-accent/22" />
+          <div key={idx} className="flex items-center gap-3">
+            <div className="size-8 shrink-0 rounded-full bg-white/10" />
             <div className="grid flex-1 gap-2">
-              <SkeletonBar className="w-[70%]" />
-              <SkeletonBar className="w-[45%]" />
+              <SkeletonBar className="w-2/3" />
+              <SkeletonBar className="w-1/3" />
             </div>
           </div>
         ))}
       </div>
-      <div className="grid gap-2 max-md:justify-items-end">
-        <SkeletonBar className="w-[75%]" />
-        <SkeletonBar className="w-[40%]" />
+      <div className={cn(STAGE_CELL, "gap-2 max-md:justify-items-end")}>
+        <SkeletonBar className="w-3/4" />
+        <SkeletonBar className="w-2/5" />
       </div>
-      <div className="col-span-2 max-md:order-2 md:col-span-1">
-        <SkeletonBar className="h-7 w-full rounded-lg" />
+      <div className={ACTION_CELL}>
+        <SkeletonBar className="h-7 w-full rounded-md" />
       </div>
     </li>
   ));

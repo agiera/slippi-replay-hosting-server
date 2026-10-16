@@ -1,17 +1,14 @@
 import { MultiSelect } from "../../../components/ui/MultiSelect";
 
-// Sticky bar under the nav with the repository / tournament / source pickers.
+// Bar under the nav with the repository / tournament / source pickers. Sticky
+// (and a fixed h-16) from `lg`, which the sidebar's sticky offset relies on.
 export function TopFilterBar({ filters, options, setFilter }) {
   return (
     <section
-      className={
-        // `relative` (not static) on narrow layouts so z-index lifts the dropdowns above the sidebar.
-        "relative z-[9] -mx-2 w-[calc(100%+16px)] border-t border-b border-t-accent/14 border-b-accent/35 " +
-        "bg-[rgb(8_7_12/0.9)] px-2 py-2.5 backdrop-blur-md " +
-        "lg:sticky lg:top-[calc(var(--top-nav-height)+var(--top-nav-border))]"
-      }
+      aria-label="Collections"
+      className="relative z-20 border-b border-white/10 bg-gray-950/80 py-3 backdrop-blur lg:sticky lg:top-14 lg:flex lg:h-16 lg:items-center"
     >
-      <div className="mx-auto grid w-[min(1080px,100%)] grid-cols-1 gap-2 md:grid-cols-3">
+      <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-2 px-4 sm:px-6 md:grid-cols-3 lg:px-8">
         <MultiSelect
           label="Repository"
           selected={filters.repository}

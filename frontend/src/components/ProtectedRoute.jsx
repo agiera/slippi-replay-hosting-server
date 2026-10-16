@@ -30,7 +30,7 @@ export default function ProtectedRoute() {
   }, []);
 
   if (loading) {
-    return <p className="p-6 text-muted">Loading session...</p>;
+    return <p className="p-6 text-sm text-gray-400">Loading session...</p>;
   }
 
   if (!authenticated) {

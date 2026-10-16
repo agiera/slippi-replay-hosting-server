@@ -1,9 +1,9 @@
 import { cn } from "../../../lib/cn";
 
 const SIZES = {
-  character: { chip: "size-7 p-0.5", icon: "size-[22px] [image-rendering:pixelated]" },
-  rank: { chip: "size-8 p-0.5", icon: "size-6" },
-  costume: { chip: "size-6 p-px", icon: "size-5 [image-rendering:pixelated]" },
+  character: { chip: "size-8 p-1", icon: "pixelated size-6" },
+  rank: { chip: "size-9 p-1", icon: "size-7" },
+  costume: { chip: "size-7 p-1", icon: "pixelated size-5" },
 };
 
 // Toggleable icon button used by the character, rank and costume pickers.
@@ -17,11 +17,11 @@ export function IconChip({ size = "character", active, icon, fallback, label, on
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "flex cursor-pointer items-center justify-center rounded-md border transition-[opacity,border-color,background-color] duration-[120ms]",
+        "flex cursor-pointer items-center justify-center rounded-md transition",
         sizing.chip,
         active
-          ? "border-accent-strong bg-accent/32 opacity-100"
-          : "border-transparent bg-transparent opacity-55 hover:border-accent-dim hover:bg-accent/18 hover:opacity-100",
+          ? "bg-indigo-500/20 ring-1 ring-inset ring-indigo-400"
+          : "opacity-60 hover:bg-white/10 hover:opacity-100",
       )}
     >
       {icon ? <img src={icon} alt="" className={cn("object-contain", sizing.icon)} /> : <span>{fallback}</span>}

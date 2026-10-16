@@ -41,10 +41,10 @@ export default function Home() {
   const removeFilter = (key) => (key === "character" ? setCharacters("") : setFilter(key, ""));
 
   return (
-    <main className="block min-h-[calc(100vh-46px)] px-2 pb-7">
+    <main>
       <TopFilterBar filters={filters} options={filterOptions} setFilter={setFilter} />
 
-      <div className="mx-auto mt-3 grid w-[min(1080px,100%)] grid-cols-1 items-start gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 items-start gap-x-8 px-4 py-6 sm:px-6 lg:grid-cols-4 lg:px-8">
         <FilterSidebar
           filters={filters}
           setFilter={setFilter}
@@ -54,7 +54,7 @@ export default function Home() {
           onClose={closeFilters}
         />
 
-        <section className="w-full min-w-0" aria-label="Replays">
+        <section className="min-w-0 lg:col-span-3" aria-label="Replays">
           <FilterToolbar
             filters={filters}
             onOpenFilters={() => setFiltersOpen(true)}
@@ -63,7 +63,7 @@ export default function Home() {
           />
 
           {feed.error ? (
-            <p className="text-danger">{feed.error}</p>
+            <p className="text-sm text-red-400" role="alert">{feed.error}</p>
           ) : (
             <ReplayList
               rows={rows}
@@ -76,11 +76,11 @@ export default function Home() {
             />
           )}
 
-          {live.streamError ? <p className="text-danger">{live.streamError}</p> : null}
+          {live.streamError ? <p className="mt-4 text-sm text-red-400" role="alert">{live.streamError}</p> : null}
 
           <div ref={feed.sentinelRef} className="h-0.5" />
-          {feed.loading && feed.files.length > 0 ? <p className="text-center text-muted">Loading more replays…</p> : null}
-          {!feed.hasMore && feed.files.length > 0 ? <p className="text-center text-[0.88rem] text-muted">That’s every replay.</p> : null}
+          {feed.loading && feed.files.length > 0 ? <p className="mt-4 text-center text-sm text-gray-400">Loading more replays…</p> : null}
+          {!feed.hasMore && feed.files.length > 0 ? <p className="mt-4 text-center text-sm text-gray-500">That’s every replay.</p> : null}
         </section>
       </div>
     </main>

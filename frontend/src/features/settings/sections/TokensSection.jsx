@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { Input } from "../../../components/ui/Input";
 import { Select } from "../../../components/ui/Select";
@@ -48,8 +49,9 @@ export function TokensSection({ me, isSuperuser, canCreateToken, repositories, t
     <>
       <SectionTitle>API Tokens (Sources)</SectionTitle>
       {canCreateToken ? (
-        <form className="mb-2.5 grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_auto]" onSubmit={onCreateToken}>
+        <form className="mt-4 grid grid-cols-1 gap-2 md:flex" onSubmit={onCreateToken}>
           <Input
+            className="md:flex-1"
             value={sourceName}
             onChange={(event) => setSourceName(event.target.value)}
             maxLength={64}
@@ -58,6 +60,7 @@ export function TokensSection({ me, isSuperuser, canCreateToken, repositories, t
             required
           />
           <Select
+            className="md:flex-1"
             value={repositoryId}
             onChange={(event) => setRepositoryId(event.target.value)}
             aria-label="Repository"
@@ -72,7 +75,7 @@ export function TokensSection({ me, isSuperuser, canCreateToken, repositories, t
               </option>
             ))}
           </Select>
-          <Button type="submit" size="lg">
+          <Button type="submit">
             Create Token
           </Button>
         </form>
@@ -81,13 +84,13 @@ export function TokensSection({ me, isSuperuser, canCreateToken, repositories, t
       )}
 
       {newTokenValue ? (
-        <div className="mb-3 rounded-[10px] border border-accent/35 bg-accent/14 p-2.5">
-          <p className="mt-0 mb-2">Copy this token now. It will not be shown again.</p>
-          <code className="block text-[0.86rem] [overflow-wrap:anywhere]">{newTokenValue}</code>
+        <div className="mt-4 rounded-md bg-indigo-500/10 p-4 ring-1 ring-inset ring-indigo-500/20">
+          <p className="text-sm font-medium text-white">Copy this token now. It will not be shown again.</p>
+          <code className="mt-2 block font-mono text-sm break-all text-indigo-300">{newTokenValue}</code>
         </div>
       ) : null}
 
-      <Table headers={["Name", "Repositories", "Prefix", "Created", "Status", "Action"]}>
+      <Table className="mt-4" headers={["Name", "Repositories", "Prefix", "Created", "Status", "Action"]}>
         {tokens.length === 0 ? <EmptyRow colSpan={6}>No API tokens yet.</EmptyRow> : null}
         {tokens.map((token) => (
           <tr key={token.id}>
@@ -95,10 +98,12 @@ export function TokensSection({ me, isSuperuser, canCreateToken, repositories, t
             <td>{(token.repositories || []).map((repo) => repo.name).join(", ") || "public"}</td>
             <td>{token.token_prefix}...</td>
             <td>{new Date(token.created_at).toLocaleString()}</td>
-            <td>{token.revoked_at ? "Revoked" : "Active"}</td>
+            <td>
+              <Badge color={token.revoked_at ? "gray" : "green"}>{token.revoked_at ? "Revoked" : "Active"}</Badge>
+            </td>
             <td>
               {!token.revoked_at ? (
-                <Button variant="ghost" size="sm" onClick={() => onRevokeToken(token.id)}>
+                <Button variant="danger" size="sm" onClick={() => onRevokeToken(token.id)}>
                   Revoke
                 </Button>
               ) : null}

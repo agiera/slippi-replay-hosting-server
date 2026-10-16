@@ -6,11 +6,11 @@ import { logout } from "../lib/api/auth";
 import { getAccessToken } from "../lib/api/session";
 import { cn } from "../lib/cn";
 
-const LINK_CLASS = "cursor-pointer text-[0.92rem] font-semibold text-muted no-underline hover:text-accent-strong";
+const LINK_CLASS = "cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-white/5 hover:text-white";
 
 // Route links are highlighted while their page is open.
 function navLinkClass({ isActive }) {
-  return cn(LINK_CLASS, isActive && "text-fg");
+  return cn(LINK_CLASS, isActive && "bg-white/10 text-white");
 }
 
 export default function TopNav() {
@@ -29,9 +29,9 @@ export default function TopNav() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-10 border-b border-accent/35 bg-black/72 backdrop-blur-[6px]">
-      <nav className="mx-auto flex min-h-(--top-nav-height) max-w-[1080px] items-center justify-between px-4">
-        <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 border-b border-white/10 bg-gray-950/80 backdrop-blur">
+      <nav className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center gap-1">
           <NavLink className={navLinkClass} to="/" end>
             Replays
           </NavLink>
@@ -39,14 +39,14 @@ export default function TopNav() {
             SlippiLab
           </a>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1">
           {isAuthenticated ? (
             <>
               <NavLink className={navLinkClass} to="/settings">
                 Settings
               </NavLink>
               <button
-                className={cn(LINK_CLASS, "bg-transparent p-0")}
+                className={LINK_CLASS}
                 onClick={async () => {
                   await logout();
                   window.location.href = "/login";
