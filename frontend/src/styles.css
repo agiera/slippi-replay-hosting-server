@@ -86,16 +86,14 @@ body {
   margin-left: auto;
 }
 
-.auth-layout,
-.settings-layout {
+.auth-layout {
   min-height: calc(100vh - 46px);
   display: grid;
   place-items: center;
   padding: 24px;
 }
 
-.auth-card,
-.settings-card {
+.auth-card {
   width: min(520px, 100%);
   padding: 28px;
   border-radius: 18px;
@@ -104,218 +102,20 @@ body {
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
 }
 
-.settings-layout {
-  align-items: start;
-  gap: 14px;
-}
-
-.settings-card {
-  width: min(960px, 100%);
-}
-
-.settings-inline-form {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.settings-inline-form-wide {
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-}
-
-.settings-token-form {
-  grid-template-columns: 1fr 1fr auto;
-}
-
-.settings-select {
-  width: 100%;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  font-size: 0.95rem;
-  padding: 10px 34px 10px 12px;
-  background-color: var(--bg-elev-soft);
-  color: var(--text);
-  appearance: none;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
-    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-  background-position:
-    calc(100% - 16px) calc(50% - 2px),
-    calc(100% - 10px) calc(50% - 2px);
-  background-size: 6px 6px, 6px 6px;
-  background-repeat: no-repeat;
-}
-
-.settings-select:focus {
-  outline: none;
-  border-color: var(--indigo-strong);
-  box-shadow: 0 0 0 2px rgba(107, 92, 177, 0.24);
-}
-
-.settings-select:disabled {
-  opacity: 0.65;
-  cursor: not-allowed;
-}
-
-.chip-toggle {
-  width: auto;
-  min-width: 156px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(107, 92, 177, 0.12);
-  color: var(--text-muted);
-  padding: 8px 12px;
-  line-height: 1;
-}
-
-.chip-toggle-label {
-  font-size: 0.78rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.chip-toggle-value {
-  font-size: 0.88rem;
-  font-weight: 700;
-}
-
-.chip-toggle.active {
-  border-color: var(--indigo-strong);
-  background: rgba(107, 92, 177, 0.34);
-  color: var(--text);
-}
-
-.chip-toggle:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.repo-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: rgba(107, 92, 177, 0.08);
-  min-height: 44px;
-}
-
-.repo-pill {
-  width: auto;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--indigo-dim);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  line-height: 1;
-}
-
-.repo-pill.selected {
-  background: var(--indigo);
-  border-color: var(--indigo-strong);
-  color: #fff;
-}
-
-.repo-pill:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.token-plain-box {
-  border-radius: 10px;
-  background: rgba(107, 92, 177, 0.14);
-  border: 1px solid var(--border);
-  padding: 10px;
-  margin-bottom: 12px;
-}
-
-.token-plain-box code {
-  display: block;
-  overflow-wrap: anywhere;
-  font-size: 0.86rem;
-}
-
-.settings-table-wrap {
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.settings-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--bg-elev);
-}
-
-.settings-table th,
-.settings-table td {
-  text-align: left;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(107, 92, 177, 0.22);
-  font-size: 0.92rem;
-}
-
-.settings-table thead th {
-  background: var(--bg-elev-soft);
-  color: var(--indigo-strong);
-}
-
-.settings-table button {
-  width: auto;
-}
-
-.settings-table select {
-  background: var(--indigo);
-  color: #ffffff;
-  border: 1px solid var(--indigo-strong);
-}
-
-.settings-table select option {
-  background: var(--indigo);
-  color: #ffffff;
-}
-
-.settings-table select:disabled {
-  background: #5a5570;
-  color: #ddd7f3;
-  border: 1px solid #76708f;
-  cursor: not-allowed;
-  opacity: 1;
-}
-
 .subtitle {
   margin-top: 0;
   color: var(--text-muted);
 }
 
-.settings-subheader {
-  margin: 14px 0 4px;
-  font-size: 0.98rem;
-  letter-spacing: 0.02em;
-  color: #ded8fb;
-}
-
-.settings-subtitle {
-  margin-bottom: 8px;
-  font-size: 0.86rem;
-}
-
-/* Form defaults for pages not yet ported to Tailwind. :where() keeps the
-   original zero-class specificity so page-specific rules still override them. */
-:where(.auth-layout, .settings-layout) form {
+/* Form defaults for the Login page until it is ported to Tailwind. :where()
+   keeps the original zero-class specificity. */
+:where(.auth-layout) form {
   display: grid;
   gap: 8px;
 }
 
-:where(.auth-layout, .settings-layout) input,
-:where(.auth-layout, .settings-layout) button {
+:where(.auth-layout) input,
+:where(.auth-layout) button {
   width: 100%;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -325,7 +125,7 @@ body {
   color: var(--text);
 }
 
-:where(.auth-layout, .settings-layout) button {
+:where(.auth-layout) button {
   border: none;
   background: var(--indigo);
   color: var(--text);
@@ -333,18 +133,18 @@ body {
   cursor: pointer;
 }
 
-:where(.auth-layout, .settings-layout) button:hover {
+:where(.auth-layout) button:hover {
   background: var(--indigo-strong);
 }
 
-:where(.auth-layout, .settings-layout) button.ghost {
+:where(.auth-layout) button.ghost {
   margin-top: 12px;
   background: transparent;
   color: var(--indigo-strong);
   border: 1px solid var(--indigo);
 }
 
-:where(.auth-layout, .settings-layout) button.link {
+:where(.auth-layout) button.link {
   display: inline;
   width: auto;
   border: none;
@@ -359,12 +159,4 @@ body {
 
 .toggle {
   margin-top: 12px;
-}
-
-pre {
-  overflow: auto;
-  background: rgba(107, 92, 177, 0.14);
-  color: var(--text);
-  padding: 12px;
-  border-radius: 8px;
 }

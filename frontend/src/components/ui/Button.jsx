@@ -9,6 +9,7 @@ const VARIANTS = {
 const SIZES = {
   sm: "rounded-lg px-2.5 py-1.5 text-[0.82rem]",
   md: "rounded-lg px-2.5 py-2 text-base",
+  lg: "rounded-[10px] px-3 py-2.5 text-base",
 };
 
 export function buttonClass({ variant = "primary", size = "md", className } = {}) {
