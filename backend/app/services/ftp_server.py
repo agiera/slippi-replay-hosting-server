@@ -1,3 +1,10 @@
+from app.services.view_cache import (
+    PEPPI_SUFFIX,
+    archive_view_replay_sidecar_bytes,
+    get_cached_replay_path,
+    prune_view_cache,
+    rebuild_cached_replay_from_archive,
+)
 import hashlib
 import binascii
 import json
@@ -200,6 +207,7 @@ class ReplayFTPHandler(FTPHandler):
         self._session_upload_context_by_file_key = {}
         self._session_stor_started_monotonic = {}
         self._pending_metadata_by_replay_name = {}
+        self._pending_metadata_sidecar_bytes_by_replay_name = {}
         self.ftp_session.upload_session_id = _set_source_connection_state(
             context.source_name,
             context.username,
@@ -331,6 +339,8 @@ class ReplayFTPHandler(FTPHandler):
             data = staged_path.read_bytes()
 
             if self._is_metadata_sidecar_filename(original_name):
+                replay_name = self._replay_name_from_metadata_sidecar(original_name)
+                self._pending_metadata_sidecar_bytes_by_replay_name[replay_name] = data
                 try:
                     payload = _decode_uploaded_metadata_sidecar(data)
                     payload = _normalize_metadata_override_payload(payload)
@@ -367,6 +377,7 @@ class ReplayFTPHandler(FTPHandler):
                 return
 
             replay_metadata_override = self._pending_metadata_by_replay_name.pop(original_name, None)
+            metadata_sidecar_bytes = self._pending_metadata_sidecar_bytes_by_replay_name.pop(original_name, None)
             self._session_replay_transfer_attempted = True
 
             transfer_seconds = None
@@ -426,6 +437,7 @@ class ReplayFTPHandler(FTPHandler):
                     "original_name": original_name,
                     "data": data,
                     "replay_metadata_override": replay_metadata_override,
+                    "metadata_sidecar_bytes": metadata_sidecar_bytes,
                     "stream_game_id": stream_game_id,
                     "upload_started_at": upload_started_at,
                 },
@@ -462,6 +474,7 @@ class ReplayFTPHandler(FTPHandler):
         replay_metadata_override: dict | None,
         stream_game_id: str | None,
         upload_started_at: datetime | None,
+        metadata_sidecar_bytes: bytes | None = None,
     ) -> None:
         started = time.monotonic()
         try:
@@ -470,6 +483,7 @@ class ReplayFTPHandler(FTPHandler):
                 original_name=original_name,
                 data=data,
                 replay_metadata_override=replay_metadata_override,
+                metadata_sidecar_bytes=metadata_sidecar_bytes,
                 stream_game_id=stream_game_id,
                 upload_started_at=upload_started_at,
             )
@@ -516,6 +530,7 @@ class ReplayFTPHandler(FTPHandler):
         replay_metadata_override: dict | None,
         stream_game_id: str | None = None,
         upload_started_at: datetime | None = None,
+        metadata_sidecar_bytes: bytes | None = None,
     ) -> None:
         """Persist a replay row and emit its stream events.
 
@@ -591,6 +606,18 @@ class ReplayFTPHandler(FTPHandler):
                 )
             db.commit()
             row_name = row.name
+            if metadata_sidecar_bytes is not None:
+                try:
+                    sidecar_path = archive_view_replay_sidecar_bytes(
+                        row.folder,
+                        row.name,
+                        Path(original_name).suffix,
+                        metadata_sidecar_bytes,
+                    )
+                    if sidecar_path is not None:
+                        logger.info("[FTP] Archived metadata sidecar for replay '%s' at '%s'", original_name, sidecar_path)
+                except OSError as exc:
+                    logger.warning("[FTP] Failed to archive metadata sidecar for replay '%s': %s", original_name, exc)
 
         parsed_slippi = _is_parsed_slippi_filename(row_name)
         if parsed_slippi:

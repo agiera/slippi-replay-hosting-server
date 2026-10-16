@@ -137,6 +137,23 @@ def test_finalize_streamed_slp_raw_length_flags_missing_footer_as_truncated():
         _finalize_streamed_slp_raw_length(header + b"\x35\x1c\x36\x02" * 100)
 
 
+def test_archive_view_replay_sidecar_as_slp_companion(monkeypatch, tmp_path):
+    from app.core.config import settings
+    from app.services.view_cache import archive_view_replay_bytes, archive_view_replay_sidecar_bytes
+
+    monkeypatch.setattr(settings, "REPLAY_VIEW_ARCHIVE_DIR", str(tmp_path))
+    folder = "uploads/public/source/2026/10/15"
+    canonical_name = "replay.peppi.json.gz"
+    slp_path = archive_view_replay_bytes(folder, canonical_name, ".slp", b"slp-bytes")
+    sidecar_bytes = b'{"ubjson_hex":"7b7d"}'
+
+    sidecar_path = archive_view_replay_sidecar_bytes(folder, canonical_name, ".slp", sidecar_bytes)
+
+    assert slp_path is not None
+    assert sidecar_path == slp_path.with_name("replay.slp.meta.json")
+    assert sidecar_path.read_bytes() == sidecar_bytes
+
+
 def test_quarantine_truncated_stream_writes_outside_the_library(monkeypatch, tmp_path):
     from app.services import ftp_server
 

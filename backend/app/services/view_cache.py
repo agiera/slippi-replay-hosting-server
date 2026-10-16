@@ -61,6 +61,25 @@ def archive_view_replay_bytes(folder_rel: str, canonical_name: str, original_suf
 
     return archive_path
 
+def archive_view_replay_sidecar_bytes(
+    folder_rel: str,
+    canonical_name: str,
+    original_suffix: str,
+    data: bytes,
+) -> Path | None:
+    if not canonical_name.endswith(PEPPI_SUFFIX):
+        return None
+
+    suffix = (original_suffix or ".slp").lower()
+    if suffix not in {".slp", ".zlp"}:
+        suffix = ".slp"
+
+    sidecar_name = f"{_strip_peppi_suffix(canonical_name)}{suffix}.meta.json"
+    sidecar_path = _archive_root() / folder_rel / sidecar_name
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_bytes(data)
+    return sidecar_path
+
 
 def get_cached_replay_path(folder_rel: str, canonical_name: str) -> Path | None:
     if not canonical_name.endswith(PEPPI_SUFFIX):
