@@ -48,6 +48,22 @@ def _get_source_state(source_name: str) -> dict:
         return dict(_source_connections[_source_connection_index[source_name]])
 
 
+def test_data_connections_send_fast_keepalive_probes():
+    import socket
+
+    from app.services.ftp_server import KeepaliveDTPHandler, _enable_data_keepalive
+
+    assert ReplayFTPHandler.dtp_handler is KeepaliveDTPHandler
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        _enable_data_keepalive(sock)
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) == 2
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == 2
+        # Must outlast the Wii's ~137 s TCP abort so the server never gives up first.
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) * 2 > 137
+
+
 @pytest.mark.parametrize("invalid", [None, "json", "extra", "oversize", "type"])
 def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
     from app.services import ftp_server

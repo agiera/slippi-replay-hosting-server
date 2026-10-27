@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import threading
 import time
 import uuid
@@ -20,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pyftpdlib.authorizers import AuthenticationFailed, DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.handlers import DTPHandler, FTPHandler
 from pyftpdlib.servers import FTPServer
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -151,7 +152,35 @@ class SourceTokenAuthorizer(DummyAuthorizer):
             self._contexts.pop(id(handler), None)
 
 
+# After a network blip the Wii's TCP waits ~34 s, then ~69 s, between
+# retransmissions and aborts after ~137 s, even once the path is back. Each
+# keepalive probe carries the server's current cumulative ACK, giving a stalled
+# Wii a chance to learn its data arrived within seconds of the path recovering.
+# 90 probes x 2 s outlasts the Wii's own abort, so the server never gives up first.
+_DATA_KEEPALIVE_IDLE_S = 2
+_DATA_KEEPALIVE_INTERVAL_S = 2
+_DATA_KEEPALIVE_PROBES = 90
+
+
+def _enable_data_keepalive(sock: socket.socket) -> None:
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, _DATA_KEEPALIVE_IDLE_S)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, _DATA_KEEPALIVE_INTERVAL_S)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, _DATA_KEEPALIVE_PROBES)
+    except OSError as exc:
+        # The connection may already be dead; DTPHandler handles that itself.
+        logger.debug("[FTP][TRACE] Could not enable data-channel keepalive: %s", exc)
+
+
+class KeepaliveDTPHandler(DTPHandler):
+    def __init__(self, sock, cmd_channel):
+        _enable_data_keepalive(sock)
+        super().__init__(sock, cmd_channel)
+
+
 class ReplayFTPHandler(FTPHandler):
+    dtp_handler = KeepaliveDTPHandler
     ftp_session: FTPSessionContext | None = None
     _session_transfer_attempted: bool = False
     _session_replay_transfer_attempted: bool = False
