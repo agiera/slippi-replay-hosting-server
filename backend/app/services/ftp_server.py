@@ -37,7 +37,7 @@ from app.services.peppi_ingest import (
     normalize_controller_metadata_players,
     parse_slippi_start_partial,
 )
-from app.services.replay_upload import persist_replay_upload
+from app.services.replay_upload import DuplicateReplayError, persist_replay_upload
 from app.services.stream_state import (
     get_connection as _get_connection,
     get_latest_connection as _get_latest_source_connection,
@@ -588,41 +588,53 @@ class ReplayFTPHandler(FTPHandler):
             if token_row is None or token_row.revoked_at is not None:
                 raise AuthenticationFailed("Source token was revoked")
 
-            row = persist_replay_upload(
-                db,
-                token_row=token_row,
-                repository_name=repository_name,
-                original_name=original_name,
-                data=data,
-                metadata_override=applied_metadata_override,
-                stream_game_id=stream_game_id,
-                upload_started_at=upload_started_at,
-            )
-            refreshed_override = _refresh_source_metadata_from_file(
-                db,
-                file_id=row._id,
-                existing_payload=applied_metadata_override,
-            )
-            if refreshed_override:
-                _set_source_player_preview(
-                    self.ftp_session.source_name,
-                    refreshed_override.get("players") or [],
-                    stage=refreshed_override.get("stage"),
+            try:
+                row = persist_replay_upload(
+                    db,
+                    token_row=token_row,
+                    repository_name=repository_name,
+                    original_name=original_name,
+                    data=data,
+                    metadata_override=applied_metadata_override,
+                    stream_game_id=stream_game_id,
+                    upload_started_at=upload_started_at,
                 )
-            db.commit()
-            row_name = row.name
-            if metadata_sidecar_bytes is not None:
-                try:
-                    sidecar_path = archive_view_replay_sidecar_bytes(
-                        row.folder,
-                        row.name,
-                        Path(original_name).suffix,
-                        metadata_sidecar_bytes,
+            except DuplicateReplayError as exc:
+                # Identical bytes are already stored (e.g. a Wii retrying after a
+                # dropped connection); finish the game as if this upload succeeded.
+                db.rollback()
+                logger.info(
+                    "[FTP] Replay '%s' already stored as '%s/%s'; skipping duplicate",
+                    original_name, exc.folder, exc.name,
+                )
+                row = None
+                row_name = exc.name
+            if row is not None:
+                refreshed_override = _refresh_source_metadata_from_file(
+                    db,
+                    file_id=row._id,
+                    existing_payload=applied_metadata_override,
+                )
+                if refreshed_override:
+                    _set_source_player_preview(
+                        self.ftp_session.source_name,
+                        refreshed_override.get("players") or [],
+                        stage=refreshed_override.get("stage"),
                     )
-                    if sidecar_path is not None:
-                        logger.info("[FTP] Archived metadata sidecar for replay '%s' at '%s'", original_name, sidecar_path)
-                except OSError as exc:
-                    logger.warning("[FTP] Failed to archive metadata sidecar for replay '%s': %s", original_name, exc)
+                db.commit()
+                row_name = row.name
+                if metadata_sidecar_bytes is not None:
+                    try:
+                        sidecar_path = archive_view_replay_sidecar_bytes(
+                            row.folder,
+                            row.name,
+                            Path(original_name).suffix,
+                            metadata_sidecar_bytes,
+                        )
+                        if sidecar_path is not None:
+                            logger.info("[FTP] Archived metadata sidecar for replay '%s' at '%s'", original_name, sidecar_path)
+                    except OSError as exc:
+                        logger.warning("[FTP] Failed to archive metadata sidecar for replay '%s': %s", original_name, exc)
 
         parsed_slippi = _is_parsed_slippi_filename(row_name)
         if parsed_slippi:

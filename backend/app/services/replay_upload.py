@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -19,6 +20,68 @@ from app.services.peppi_ingest import parse_slippi_bytes, parse_slippi_stage_par
 from app.services.slippi_profile import fetch_profile_by_connect_code
 from app.services.tournament_slug import resolve_tournament_name
 from app.services.view_cache import archive_view_replay_bytes, cache_view_replay_bytes, prune_view_cache
+
+
+class DuplicateReplayError(Exception):
+    """Raised when identical replay bytes already exist in the target repository."""
+
+    def __init__(self, existing: File):
+        super().__init__(f"Replay already uploaded as {existing.folder}/{existing.name}")
+        self.file_id = existing._id
+        self.folder = existing.folder
+        self.name = existing.name
+        self.size_bytes = existing.size_bytes
+
+
+def compute_content_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def find_file_by_hash(db: Session, *, repository_id: int, content_hash: str) -> File | None:
+    return db.scalar(select(File).where(File.repository_id == repository_id, File.sha256 == content_hash))
+
+
+def resolve_upload_repository(db: Session, token_row: ApiToken) -> Repository:
+    """Return the repository an API token uploads into.
+
+    The repository is always decided by token scope, never by client input.
+    """
+    token_repositories = list(token_row.repositories)
+    token_repository_names = [repo.name for repo in token_repositories if repo.name]
+
+    if len(token_repositories) == 1:
+        normalized_repository = token_repositories[0].name
+    else:
+        tournament_repo_names = {
+            tournament.repository.name
+            for tournament in token_row.tournaments
+            if tournament.repository and tournament.repository.name
+        }
+        if len(tournament_repo_names) == 1:
+            normalized_repository = next(iter(tournament_repo_names))
+        else:
+            allowed_repositories = ", ".join(sorted(token_repository_names)) or "none"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Token must map to exactly one repository for uploads. "
+                    f"Current token repositories: {allowed_repositories}"
+                ),
+            )
+
+    repository_row = db.scalar(select(Repository).where(Repository.name == normalized_repository))
+    if not repository_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Repository does not exist")
+
+    token_repository_ids = {repo.id for repo in token_repositories}
+    if repository_row.id not in token_repository_ids:
+        allowed_repositories = ", ".join(sorted(token_repository_names)) or "none"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"API token is not authorized for the requested repository. Allowed repositories: {allowed_repositories}",
+        )
+
+    return repository_row
 
 
 def _resolve_unique_path(base_dir: Path, filename: str) -> Path:
@@ -77,7 +140,7 @@ def _build_storage_name(
     p1 = _player_label(parsed_replay, 0)
     p2 = _player_label(parsed_replay, 1)
     stage = f"s{parsed_replay.stage}" if parsed_replay and parsed_replay.stage is not None else "s-unknown"
-    content_hash = hashlib.sha256(data).hexdigest()[:8]
+    content_hash = compute_content_hash(data)[:8]
 
     suffix = fallback_suffix
     if parsed_replay is not None:
@@ -293,41 +356,12 @@ def persist_replay_upload(
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
 
-    token_repositories = list(token_row.repositories)
-    token_repository_names = [repo.name for repo in token_repositories if repo.name]
+    repository_row = resolve_upload_repository(db, token_row)
 
-    # Repository is always decided by token scope, not client-provided input.
-    if len(token_repositories) == 1:
-        normalized_repository = token_repositories[0].name
-    else:
-        tournament_repo_names = {
-            tournament.repository.name
-            for tournament in token_row.tournaments
-            if tournament.repository and tournament.repository.name
-        }
-        if len(tournament_repo_names) == 1:
-            normalized_repository = next(iter(tournament_repo_names))
-        else:
-            allowed_repositories = ", ".join(sorted(token_repository_names)) or "none"
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Token must map to exactly one repository for uploads. "
-                    f"Current token repositories: {allowed_repositories}"
-                ),
-            )
-
-    repository_row = db.scalar(select(Repository).where(Repository.name == normalized_repository))
-    if not repository_row:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Repository does not exist")
-
-    token_repository_ids = {repo.id for repo in token_repositories}
-    if repository_row.id not in token_repository_ids:
-        allowed_repositories = ", ".join(sorted(token_repository_names)) or "none"
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"API token is not authorized for the requested repository. Allowed repositories: {allowed_repositories}",
-        )
+    content_hash = compute_content_hash(data)
+    existing = find_file_by_hash(db, repository_id=repository_row.id, content_hash=content_hash)
+    if existing is not None:
+        raise DuplicateReplayError(existing)
 
     safe_repo_name = _sanitize_segment(repository_row.name, "public")
     safe_collection_name = _sanitize_segment(token_row.source_name, "default")
@@ -402,9 +436,20 @@ def persist_replay_upload(
         size_bytes=target_path.stat().st_size,
         birth_time=now.isoformat(),
         tournament_name=tournament_snapshot_name,
+        repository_id=repository_row.id,
+        sha256=content_hash,
     )
     db.add(row)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # A concurrent upload of the same bytes won the race after our check.
+        db.rollback()
+        target_path.unlink(missing_ok=True)
+        existing = find_file_by_hash(db, repository_id=repository_row.id, content_hash=content_hash)
+        if existing is None:
+            raise
+        raise DuplicateReplayError(existing) from None
 
     profile_cache: dict[str, object | None] = {}
     handwarmer = classify_handwarmer(parsed_replay)

@@ -71,6 +71,28 @@ A minimal full-stack starter with:
 - `POST /api/v1/auth/refresh` rotates refresh tokens and issues a new access token.
 - `POST /api/v1/auth/logout` revokes the provided refresh token.
 
+## Replay Upload Endpoints
+
+Authenticated with an API token (`X-API-Token` or `Authorization: Bearer`). The
+target repository is always the token's repository.
+
+- `POST /api/v1/uploads/files`: multipart upload (field `file`). An optional
+  `X-Content-SHA256` header is verified against the received bytes (400 on
+  mismatch). Returns 409 with the existing file's `id`/`folder`/`name` when the
+  same bytes are already stored in the repository.
+- `POST /api/v1/uploads/files/check`: body `{"hashes": ["<sha256>", ...]}`
+  (max 1000); returns `{"existing": {"<sha256>": {"id", "folder", "name"}}}`
+  for hashes already stored in the repository.
+
+Duplicates are detected by the SHA-256 of the replay bytes as uploaded, unique
+per repository. Files stored before this existed have no hash; after migrating,
+backfill them (preview with `--dry-run`):
+
+```bash
+docker compose run --rm backend python -m app.scripts.backfill_file_sha256 --dry-run
+docker compose run --rm backend python -m app.scripts.backfill_file_sha256
+```
+
 ## Run Backend Tests
 
 ```bash
