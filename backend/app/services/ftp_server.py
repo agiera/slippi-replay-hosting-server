@@ -515,6 +515,7 @@ class ReplayFTPHandler(FTPHandler):
                     repository=self.ftp_session.repository_name,
                     filename=original_name,
                     status="failed",
+                    upload_session_id=self.ftp_session.upload_session_id,
                 )
             logger.warning(
                 "[FTP][WARN] Truncated stream '%s' %s bytes=%d saved_to='%s': %s",
@@ -528,6 +529,7 @@ class ReplayFTPHandler(FTPHandler):
                     repository=self.ftp_session.repository_name,
                     filename=original_name,
                     status="failed",
+                    upload_session_id=self.ftp_session.upload_session_id,
                 )
             logger.error("[FTP] Failed to finalize uploaded file '%s': %s", original_name, exc)
         finally:
@@ -644,6 +646,7 @@ class ReplayFTPHandler(FTPHandler):
                 repository=repository_name,
                 filename=original_name,
                 status="slippi_file_metadata",
+                upload_session_id=self.ftp_session.upload_session_id,
             )
             _record_stream_event(
                 source_name=self.ftp_session.source_name,
@@ -651,6 +654,7 @@ class ReplayFTPHandler(FTPHandler):
                 repository=repository_name,
                 filename=original_name,
                 status="ended",
+                upload_session_id=self.ftp_session.upload_session_id,
             )
         else:
             _record_stream_event(
@@ -659,6 +663,7 @@ class ReplayFTPHandler(FTPHandler):
                 repository=repository_name,
                 filename=original_name,
                 status="pending_parse",
+                upload_session_id=self.ftp_session.upload_session_id,
             )
 
         logger.info("[FTP] Uploaded %s to repository '%s'", original_name, repository_name)

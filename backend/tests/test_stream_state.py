@@ -44,6 +44,21 @@ def test_reconnect_supersedes_previous_connection_and_keeps_last_completed():
     assert previous["connected"] is False
 
 
+def test_event_pinned_to_session_lands_on_that_session_after_reconnect():
+    # The Wii reconnects for its next game before off-loop finalization emits
+    # "ended"; that event must finish the game it belongs to, not the new one.
+    first = stream_state.set_source_connection_state("WII-P", "u", {"public"}, connected=True)
+    first_game = stream_state.get_connection(first)["stream_game_id"]
+    stream_state.set_source_connection_state("WII-P", "u", {"public"}, connected=False)
+    second = stream_state.set_source_connection_state("WII-P", "u", {"public"}, connected=True)
+
+    event = stream_state.record_stream_event("WII-P", "u", "public", "a.slp", "ended", upload_session_id=first)
+
+    assert event["stream_game_id"] == first_game
+    assert stream_state.get_connection(first)["stream_phase"] == "ended"
+    assert stream_state.get_connection(second)["stream_phase"] == "started"
+
+
 def test_disconnect_closes_only_latest_and_snapshot_still_lists_recent_rows():
     stream_state.set_source_connection_state("WII-B", "u", {"public"}, connected=True)
     stream_state.set_source_player_preview("WII-B", [{"port": 1, "display_name": "P1"}], stage=8)

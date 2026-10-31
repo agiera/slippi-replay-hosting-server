@@ -321,16 +321,30 @@ def record_stream_event(
     status: str,
     *,
     attach_to_connection: bool = True,
+    upload_session_id: str | None = None,
     session_factory: sessionmaker | None = None,
 ) -> dict:
     """Append a stream event; the commit fires NOTIFY so SSE clients wake.
 
     ``attach_to_connection=False`` records a standalone event (e.g. an HTTP
     upload) without touching the source's live FTP connection row.
+
+    ``upload_session_id`` pins the event to that connection row even if it has
+    since disconnected. Off-loop finalization needs this: the Wii reconnects for
+    its next game before parsing finishes, so "latest connected" is the wrong row.
     """
     event_time = _now()
     with _factory(session_factory)() as db:
-        row = _latest_connected_row(db, source_name, for_update=True) if attach_to_connection else None
+        row = None
+        if attach_to_connection:
+            if upload_session_id is not None:
+                row = db.scalar(
+                    select(StreamConnection)
+                    .where(StreamConnection.upload_session_id == upload_session_id)
+                    .with_for_update()
+                )
+            if row is None:
+                row = _latest_connected_row(db, source_name, for_update=True)
         upload_session_id = row.upload_session_id if row is not None else None
         stream_game_id = row.stream_game_id if row is not None else None
 

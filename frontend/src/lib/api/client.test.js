@@ -2,7 +2,7 @@ import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { installBrowserGlobals, stubFetch } from "./testGlobals.js";
-import { ApiError, buildQuery, request } from "./client.js";
+import { ApiError, buildQuery, isAccessTokenExpired, request } from "./client.js";
 import { fetchReplayFiles } from "./replays.js";
 
 let storage;
@@ -61,4 +61,59 @@ test("fetchReplayFiles only forwards known filter keys", async () => {
   const calls = stubFetch([{ body: { items: [], next_cursor: null } }]);
   await fetchReplayFiles({ keyword: "fox", limit: 40, cursor: null, ranked: "", bogus: "1" });
   assert.equal(calls[0].url, "/api/v1/replays/files?limit=40&keyword=fox");
+});
+
+function jwtWithExp(expSeconds) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "HS256" })}.${encode({ sub: "1", exp: expSeconds })}.sig`;
+}
+
+test("isAccessTokenExpired reads the JWT exp and ignores opaque tokens", () => {
+  const nowMs = 1_000_000_000_000;
+  assert.equal(isAccessTokenExpired(jwtWithExp(nowMs / 1000 - 1), nowMs), true);
+  assert.equal(isAccessTokenExpired(jwtWithExp(nowMs / 1000 + 10), nowMs), true);
+  assert.equal(isAccessTokenExpired(jwtWithExp(nowMs / 1000 + 3600), nowMs), false);
+  assert.equal(isAccessTokenExpired("opaque", nowMs), false);
+  assert.equal(isAccessTokenExpired(null, nowMs), false);
+});
+
+test("request refreshes an expired access token before sending it", async () => {
+  storage.setItem("token", jwtWithExp(Date.now() / 1000 - 60));
+  storage.setItem("refresh_token", "refresh-1");
+  const calls = stubFetch([
+    { body: { access_token: "fresh", refresh_token: "refresh-2", user: { id: 1 } } },
+    { body: { items: [] } },
+  ]);
+
+  await request("/replays/files");
+
+  assert.equal(calls[0].url, "/api/v1/auth/refresh");
+  assert.equal(calls[1].headers.Authorization, `Bearer fresh`);
+  assert.equal(storage.getItem("refresh_token"), "refresh-2");
+});
+
+test("concurrent requests share one refresh", async () => {
+  storage.setItem("token", jwtWithExp(Date.now() / 1000 - 60));
+  storage.setItem("refresh_token", "refresh-1");
+  const calls = stubFetch([
+    { body: { access_token: "fresh", refresh_token: "refresh-2", user: { id: 1 } } },
+    { body: {} },
+    { body: {} },
+  ]);
+
+  await Promise.all([request("/a"), request("/b")]);
+
+  assert.equal(calls.filter((call) => call.url.endsWith("/auth/refresh")).length, 1);
+  assert.ok(calls.slice(1).every((call) => call.headers.Authorization === `Bearer fresh`));
+});
+
+test("request goes anonymous when the refresh token is rejected", async () => {
+  storage.setItem("token", jwtWithExp(Date.now() / 1000 - 60));
+  storage.setItem("refresh_token", "revoked");
+  const calls = stubFetch([{ status: 401, body: { detail: "invalid" } }, { body: {} }]);
+
+  await request("/replays/files");
+
+  assert.deepEqual(calls[1].headers, {});
+  assert.equal(storage.getItem("token"), null);
 });
