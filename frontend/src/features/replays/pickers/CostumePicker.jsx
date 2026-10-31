@@ -1,0 +1,57 @@
+import { getCharacterStock, getCostumeIds } from "../../../assets";
+import { CHARACTER_BY_ID } from "../../../data/characters";
+import { parseCostumeSelection, serializeCostumeSelection } from "../filters";
+import { IconChip } from "./IconChip";
+
+// One row of costume chips per selected character, shown once a character is picked.
+export function CostumePicker({ selectedCharacters, selectedCostumes, onChange }) {
+  const selections = parseCostumeSelection(selectedCostumes);
+
+  function toggleCostume(characterId, costumeId) {
+    const nextSelections = parseCostumeSelection(selectedCostumes);
+    if (!nextSelections.has(characterId)) {
+      nextSelections.set(characterId, new Set());
+    }
+
+    const characterSelections = nextSelections.get(characterId);
+    if (characterSelections.has(costumeId)) {
+      characterSelections.delete(costumeId);
+    } else {
+      characterSelections.add(costumeId);
+    }
+
+    if (characterSelections.size === 0) {
+      nextSelections.delete(characterId);
+    }
+
+    onChange(serializeCostumeSelection(nextSelections));
+  }
+
+  if (selectedCharacters.length === 0) {
+    return <p className="text-xs text-gray-400">Pick a character to filter by costume.</p>;
+  }
+
+  return (
+    <div className="grid gap-1.5 rounded-md bg-white/5 p-1.5 ring-1 ring-inset ring-white/10" role="group" aria-label="Costumes">
+      {selectedCharacters.map((characterId) => {
+        const characterName = CHARACTER_BY_ID.get(characterId)?.name || `Character ${characterId}`;
+        const activeCostumes = selections.get(characterId) || new Set();
+        return (
+          <div key={characterId} className="flex flex-wrap gap-1">
+            {getCostumeIds(characterId).map((costumeId) => (
+              <IconChip
+                key={costumeId}
+                size="costume"
+                label={`${characterName} costume ${costumeId + 1}`}
+                icon={getCharacterStock(characterId, costumeId)}
+                fallback={costumeId}
+                active={activeCostumes.has(costumeId)}
+                onClick={() => toggleCostume(characterId, costumeId)}
+              />
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

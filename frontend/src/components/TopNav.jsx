@@ -1,20 +1,17 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 
-import { getAccessToken, logout } from "../lib/api";
+import { SLIPPILAB_URL } from "../config/env";
+import { logout } from "../lib/api/auth";
+import { getAccessToken } from "../lib/api/session";
+import { cn } from "../lib/cn";
 
-const SLIPPILAB_URL = (() => {
-  const configured = String(import.meta.env.VITE_SLIPPILAB_URL || "").trim();
-  if (configured) {
-    return configured.replace(/\/$/, "");
-  }
+const LINK_CLASS = "cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-white/5 hover:text-white";
 
-  if (typeof window !== "undefined" && window.location?.origin) {
-    return `${window.location.origin.replace(/\/$/, "")}/slippilab`;
-  }
-
-  return "";
-})();
+// Route links are highlighted while their page is open.
+function navLinkClass({ isActive }) {
+  return cn(LINK_CLASS, isActive && "bg-white/10 text-white");
+}
 
 export default function TopNav() {
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getAccessToken()));
@@ -32,24 +29,24 @@ export default function TopNav() {
   }, []);
 
   return (
-    <header className="top-nav">
-      <nav className="top-nav-inner">
-        <div className="top-nav-left">
-          <Link className="top-nav-link" to="/">
+    <header className="sticky top-0 z-30 border-b border-white/10 bg-gray-950/80 backdrop-blur">
+      <nav className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center gap-1">
+          <NavLink className={navLinkClass} to="/" end>
             Replays
-          </Link>
-          <a className="top-nav-link" href={SLIPPILAB_URL} target="_blank" rel="noreferrer">
+          </NavLink>
+          <a className={LINK_CLASS} href={SLIPPILAB_URL} target="_blank" rel="noreferrer">
             SlippiLab
           </a>
         </div>
-        <div className="top-nav-right">
+        <div className="flex items-center gap-1">
           {isAuthenticated ? (
             <>
-              <Link className="top-nav-link" to="/settings">
+              <NavLink className={navLinkClass} to="/settings">
                 Settings
-              </Link>
+              </NavLink>
               <button
-                className="top-nav-link top-nav-button"
+                className={LINK_CLASS}
                 onClick={async () => {
                   await logout();
                   window.location.href = "/login";
@@ -60,9 +57,9 @@ export default function TopNav() {
               </button>
             </>
           ) : (
-            <Link className="top-nav-link login-link" to="/login">
+            <NavLink className={navLinkClass} to="/login">
               Login
-            </Link>
+            </NavLink>
           )}
         </div>
       </nav>

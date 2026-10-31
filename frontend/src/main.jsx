@@ -3,9 +3,10 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
-import "./styles.css";
+import { TAB_NAME } from "./config/env";
+import "./index.css";
 
-document.title = import.meta.env.VITE_TAB_NAME || "Slippi Replay Hosting";
+document.title = TAB_NAME;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet } from "react-router-dom";
 
-import { fetchMe, getAccessToken } from "../lib/api";
+import { fetchMe } from "../lib/api/auth";
+import { getAccessToken } from "../lib/api/session";
 
 export default function ProtectedRoute() {
   const [loading, setLoading] = useState(true);
@@ -29,7 +30,7 @@ export default function ProtectedRoute() {
   }, []);
 
   if (loading) {
-    return <p style={{ padding: 24 }}>Loading session...</p>;
+    return <p className="p-6 text-sm text-gray-400">Loading session...</p>;
   }
 
   if (!authenticated) {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createStreamStatusRefreshScheduler } from "./homeStreamRefresh.js";
+import { createStreamStatusRefreshScheduler } from "./streamRefresh.js";
 
 function createTimerHarness() {
   let nextId = 1;

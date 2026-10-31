@@ -1,7 +1,7 @@
 const TERMINAL_STREAM_PHASES = new Set(["ended", "completed", "abandoned", "incomplete", "failed"]);
 const FINALIZING_STREAM_PHASES = new Set(["pending_parse", "slippi_file_metadata"]);
 
-function isTerminalStreamStatus(status) {
+export function isTerminalStreamStatus(status) {
   return TERMINAL_STREAM_PHASES.has(String(status || "").toLowerCase());
 }
 

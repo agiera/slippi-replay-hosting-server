@@ -698,6 +698,52 @@ def test_upload_endpoint_parses_metadata_and_persists_game_rows(client, db_sessi
     assert item["stage"] == 3
     assert item["game_duration"] == 150
     assert item["datetime_played"] == "2024-03-02T18:20:00Z"
+    assert item["is_teams"] is False
+
+
+def test_replay_list_reports_team_mode(client, db_session, tmp_path, monkeypatch):
+    raw_token = _seed_uploader_with_public_repo(db_session)
+
+    fake_parsed = ParsedReplayData(
+        stage=31,
+        start_time="2024-03-03T18:20:00Z",
+        last_frame=3600,
+        is_teams=1,
+        players=[
+            {
+                "port": port,
+                "type": 0,
+                "character_id": 2,
+                "costume_id": 0,
+                "team_id": team_id,
+                "connect_code": None,
+                "display_name": f"P{port}",
+                "tag": None,
+                "user_id": None,
+            }
+            for port, team_id in ((1, 0), (2, 1), (3, 0), (4, 1))
+        ],
+        peppi_bytes=b"COMPRESSED-PEPPI-TEAMS",
+    )
+    monkeypatch.setattr("app.api.v1.uploads.parse_slippi_bytes", lambda *_args, **_kwargs: fake_parsed)
+
+    original_storage_dir = settings.REPLAY_STORAGE_DIR
+    settings.REPLAY_STORAGE_DIR = str(tmp_path)
+    try:
+        upload_res = client.post(
+            "/api/v1/uploads/files",
+            data={"repository": "public"},
+            files={"file": ("teams.slp", b"SLP-TEAMS", "application/octet-stream")},
+            headers={"X-API-Token": raw_token},
+        )
+    finally:
+        settings.REPLAY_STORAGE_DIR = original_storage_dir
+
+    assert upload_res.status_code == 200
+    items = client.get("/api/v1/replays/files").json()["items"]
+    item = next(it for it in items if it["id"] == upload_res.json()["id"])
+    assert item["is_teams"] is True
+    assert [player["team_id"] for player in item["players"]] == [0, 1, 0, 1]
 
 
 def test_upload_endpoint_falls_back_when_peppi_parse_fails(client, db_session, tmp_path, monkeypatch):

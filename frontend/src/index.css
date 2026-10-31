@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+/* The app uses Tailwind's default palette, spacing, type scale and breakpoints.
+   Only things Tailwind has no equivalent for are added here. */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Controller port colours, matching assets/icons/port{1-4}.svg. */
+  --color-p1: #ef476f;
+  --color-p2: #118ab2;
+  --color-p3: #06d6a0;
+  --color-p4: #ffd166;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background-color: var(--color-gray-950);
+    color: var(--color-white);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html,
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    min-height: 100vh;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-indigo-500);
+    outline-offset: 2px;
+  }
+}
+
+/* Crisp upscaling for the small pixel-art stock icons. */
+@utility pixelated {
+  image-rendering: pixelated;
+}
+
+/* Stage art behind a replay row: a faint hint of the stage under a dark scrim, so
+   row text keeps its contrast. Set the image with style={{ "--stage-img": `url(...)` }}. */
+@utility stage-backdrop {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--color-gray-900) 96%, transparent) 12%,
+      color-mix(in oklab, var(--color-gray-900) 86%, transparent) 32%,
+      color-mix(in oklab, var(--color-gray-900) 86%, transparent) 68%,
+      color-mix(in oklab, var(--color-gray-900) 96%, transparent) 88%
+    ),
+    radial-gradient(circle at left center, color-mix(in oklab, var(--color-indigo-500) 22%, transparent), transparent 44%),
+    radial-gradient(circle at right center, color-mix(in oklab, var(--color-indigo-500) 22%, transparent), transparent 44%),
+    var(--stage-img);
+  background-repeat: no-repeat;
+  background-position: center, left center, right center, center;
+  background-size: auto, 440px 180%, 440px 180%, 980px auto;
+}

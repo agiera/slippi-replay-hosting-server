@@ -6,7 +6,7 @@ import {
   applyStreamEventFrame,
   newestRefreshEventMs,
   shouldRefreshReplayList,
-} from "./homeStreamState.js";
+} from "./streamState.js";
 
 test("newestRefreshEventMs picks newest qualifying status timestamp", () => {
   const events = [
