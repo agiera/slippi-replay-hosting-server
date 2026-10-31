@@ -19,22 +19,38 @@ export function useReplayFeed(filters) {
   const [error, setError] = useState("");
   const [preservedTerminalRows, setPreservedTerminalRows] = useState([]);
   const sentinelRef = useRef(null);
+  // `loading` is stale inside an IntersectionObserver callback created before the
+  // latest render; without this synchronous flag a "load more" can start next to
+  // a first-page load and append the same page a second time.
+  const inFlightRef = useRef(false);
+  // Bumped by every first-page load so superseded requests drop their results.
+  const generationRef = useRef(0);
 
   const reload = useCallback(async () => {
+    const generation = ++generationRef.current;
+    inFlightRef.current = true;
     setLoading(true);
     setError("");
     try {
       const data = await fetchReplayFiles({ ...filters, limit: PAGE_SIZE });
+      if (generation !== generationRef.current) {
+        return;
+      }
       const nextCursor = data?.next_cursor ?? null;
       setFiles(data.items);
       setCursor(nextCursor);
       setHasMore(nextCursor !== null);
     } catch (err) {
-      setError(err.message);
-      setHasMore(false);
+      if (generation === generationRef.current) {
+        setError(err.message);
+        setHasMore(false);
+      }
     } finally {
-      setPreservedTerminalRows([]);
-      setLoading(false);
+      if (generation === generationRef.current) {
+        inFlightRef.current = false;
+        setPreservedTerminalRows([]);
+        setLoading(false);
+      }
     }
   }, [filters]);
 
@@ -48,25 +64,35 @@ export function useReplayFeed(filters) {
     }
 
     const observer = new IntersectionObserver((entries) => {
-      if (!entries[0].isIntersecting || loading || !hasMore || error) {
+      if (!entries[0].isIntersecting || inFlightRef.current || !hasMore || error) {
         return;
       }
 
       async function loadMore() {
+        const generation = generationRef.current;
+        inFlightRef.current = true;
         setLoading(true);
         setError("");
         try {
           const data = await fetchReplayFiles({ ...filters, limit: PAGE_SIZE, cursor });
+          if (generation !== generationRef.current) {
+            return;
+          }
           const nextCursor = data?.next_cursor ?? null;
           setFiles((prev) => [...prev, ...data.items]);
           setCursor(nextCursor);
           // Stop auto-pagination if server does not provide a cursor or repeats it.
           setHasMore(nextCursor !== null && nextCursor !== cursor);
         } catch (err) {
-          setError(err.message);
-          setHasMore(false);
+          if (generation === generationRef.current) {
+            setError(err.message);
+            setHasMore(false);
+          }
         } finally {
-          setLoading(false);
+          if (generation === generationRef.current) {
+            inFlightRef.current = false;
+            setLoading(false);
+          }
         }
       }
 
