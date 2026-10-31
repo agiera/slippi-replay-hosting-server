@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from app.services import stream_state
+from app.services.stream_notify import stream_change_notifier
 
 
 @pytest.fixture()
@@ -32,7 +34,14 @@ def db_session(testing_session_local) -> Generator[Session, None, None]:
 
 
 @pytest.fixture()
-def client(testing_session_local) -> Generator[TestClient, None, None]:
+def stream_state_db(monkeypatch, testing_session_local):
+    """Route stream_state's default session factory at the per-test SQLite DB."""
+    monkeypatch.setattr(stream_state, "SessionLocal", testing_session_local)
+    return testing_session_local
+
+
+@pytest.fixture()
+def client(monkeypatch, testing_session_local) -> Generator[TestClient, None, None]:
 
     def override_get_db() -> Generator[Session, None, None]:
         db = testing_session_local()
@@ -42,6 +51,8 @@ def client(testing_session_local) -> Generator[TestClient, None, None]:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    # Never open a LISTEN connection to the real Postgres from tests.
+    monkeypatch.setattr(stream_change_notifier, "start", lambda: None)
 
     with TestClient(app) as test_client:
         yield test_client

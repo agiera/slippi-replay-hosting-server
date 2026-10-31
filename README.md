@@ -186,11 +186,11 @@ SITE CLEARSLPMETA
 
 ## FTP Uploads (Wii)
 
-The backend can expose an FTP endpoint for direct Wii/Nintendont replay uploads.
+The `ftp` service (same image as `backend`, entrypoint `python -m app.ftp_main`) accepts direct Wii/Nintendont replay uploads. It runs as its own container so backend hot-reloads and restarts never interrupt an in-progress upload. Live-stream state is shared with the API through Postgres (`stream_connections` / `stream_events`), and the API is woken by `LISTEN/NOTIFY` rather than polling.
 
-- Set `FTP_ENABLED=true` in `.env`
 - Use `FTP_PORT` to choose the listening port (default `2121`)
 - If needed, set passive mode range with `FTP_PASSIVE_PORTS`, e.g. `30000-30050`
+- `FTP_STAGING_DIR` must be a volume mounted into both `ftp` and `backend` (the API serves in-progress replays from it)
 
 Authentication model:
 
