@@ -9,9 +9,10 @@ from app.core.config import settings
 from app.models.api_token import ApiToken
 from app.models.file import File
 from app.models.repository import Repository
+from app.models.stream_event import StreamEvent
 from app.models.user import User
 from app.scripts import backfill_file_sha256
-from app.services import replay_upload
+from app.services import replay_upload, stream_state
 from app.services.replay_upload import DuplicateReplayError, persist_replay_upload
 
 DATA = b"SLP-DATA-ONE"
@@ -284,3 +285,48 @@ def test_stream_requires_a_valid_token(client, db_session, storage):
     streamed, _ = _finished_slp(b"frames")
     assert _stream(client, "slp_not_a_real_token", streamed).status_code in (401, 403)
     assert db_session.scalars(select(File)).all() == []
+
+
+def _stream_events(db_session) -> list[StreamEvent]:
+    db_session.expire_all()
+    return list(db_session.scalars(select(StreamEvent).order_by(StreamEvent.id)))
+
+
+def test_daemon_upload_records_a_stream_event_for_sse(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_sse_upload")
+
+    assert _upload(client, "slp_sse_upload", name="Game_1.slp").status_code == 200
+    events = _stream_events(db_session)
+    assert [(e.source_name, e.username, e.repository, e.filename, e.status) for e in events] == [
+        ("src-slp_sse_upload", "u-slp_sse_upload", "public", "Game_1.slp", "completed"),
+    ]
+
+    # A duplicate stores nothing new, so there is nothing to announce.
+    assert _upload(client, "slp_sse_upload", name="Game_1.slp").status_code == 409
+    assert len(_stream_events(db_session)) == 1
+
+
+def test_daemon_stream_upload_records_a_stream_event_for_sse(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_sse_stream")
+    streamed, _ = _finished_slp(b"frame-bytes")
+
+    assert _stream(client, "slp_sse_stream", streamed, name="Game_live.slp").status_code == 200
+    events = _stream_events(db_session)
+    assert [(e.source_name, e.filename, e.status) for e in events] == [
+        ("src-slp_sse_stream", "Game_live.slp", "completed"),
+    ]
+
+
+def test_daemon_upload_event_leaves_live_ftp_connection_untouched(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_sse_live")
+    session_id = stream_state.set_source_connection_state(
+        "src-slp_sse_live", "u-slp_sse_live", {"public"}, connected=True
+    )
+
+    assert _upload(client, "slp_sse_live").status_code == 200
+    [event] = _stream_events(db_session)
+    assert event.upload_session_id is None and event.stream_game_id is None
+    live = stream_state.get_connection(session_id)
+    assert live["connected"] is True
+    assert live["stream_phase"] == "started"
+    assert live["last_completed_at"] is None

@@ -41,7 +41,7 @@ def stream_state_db(monkeypatch, testing_session_local):
 
 
 @pytest.fixture()
-def client(monkeypatch, testing_session_local) -> Generator[TestClient, None, None]:
+def client(monkeypatch, testing_session_local, stream_state_db) -> Generator[TestClient, None, None]:
 
     def override_get_db() -> Generator[Session, None, None]:
         db = testing_session_local()

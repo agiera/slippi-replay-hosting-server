@@ -320,11 +320,17 @@ def record_stream_event(
     filename: str,
     status: str,
     *,
+    attach_to_connection: bool = True,
     session_factory: sessionmaker | None = None,
 ) -> dict:
+    """Append a stream event; the commit fires NOTIFY so SSE clients wake.
+
+    ``attach_to_connection=False`` records a standalone event (e.g. an HTTP
+    upload) without touching the source's live FTP connection row.
+    """
     event_time = _now()
     with _factory(session_factory)() as db:
-        row = _latest_connected_row(db, source_name, for_update=True)
+        row = _latest_connected_row(db, source_name, for_update=True) if attach_to_connection else None
         upload_session_id = row.upload_session_id if row is not None else None
         stream_game_id = row.stream_game_id if row is not None else None
 

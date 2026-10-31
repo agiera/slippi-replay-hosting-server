@@ -14,6 +14,7 @@ from app.api.v1.deps import get_active_api_token, get_api_token_user
 from app.db.session import get_db
 from app.models.api_token import ApiToken
 from app.models.file import File
+from app.models.repository import Repository
 from app.models.user import User
 from app.services.peppi_ingest import parse_slippi_bytes
 from app.services.replay_upload import (
@@ -23,6 +24,7 @@ from app.services.replay_upload import (
     resolve_upload_repository,
 )
 from app.services.slp_stream import finalize_streamed_slp
+from app.services.stream_state import record_stream_event
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,23 @@ _MAX_STREAM_BYTES = 250 * 1024 * 1024
 
 MAX_HASHES_PER_CHECK = 1000
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _announce_upload(db: Session, token_row: ApiToken, user: User, saved: File, original_name: str) -> None:
+    """Record a stream event so SSE clients refresh their replay lists."""
+    repository_row = db.get(Repository, saved.repository_id) if saved.repository_id is not None else None
+    repository = repository_row.name if repository_row is not None else "unknown"
+    try:
+        record_stream_event(
+            source_name=token_row.source_name,
+            username=user.username,
+            repository=repository,
+            filename=original_name,
+            status="completed",
+            attach_to_connection=False,
+        )
+    except Exception:
+        logger.exception("Failed to record stream event for uploaded replay '%s'", original_name)
 
 
 def _duplicate_response(exc: DuplicateReplayError) -> JSONResponse:
@@ -59,7 +78,7 @@ async def upload_replay_file(
     repository: str = Form(default="public"),
     x_content_sha256: str | None = Header(default=None, alias="X-Content-SHA256"),
     token_row: ApiToken = Depends(get_active_api_token),
-    _: User = Depends(get_api_token_user),
+    user: User = Depends(get_api_token_user),
     db: Session = Depends(get_db),
 ):
     if not file.filename:
@@ -93,6 +112,8 @@ async def upload_replay_file(
     saved = db.scalar(select(File).where(File._id == row._id))
     if not saved:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to persist file metadata")
+
+    _announce_upload(db, token_row, user, saved, original_name)
 
     return {
         "id": saved._id,
@@ -146,7 +167,7 @@ async def stream_replay_file(
     x_filename: str = Header(..., alias="X-Filename"),
     x_repository: str = Header(default="public", alias="X-Repository"),
     token_row: ApiToken = Depends(get_active_api_token),
-    _: User = Depends(get_api_token_user),
+    user: User = Depends(get_api_token_user),
     db: Session = Depends(get_db),
 ):
     """Accept a live console-mirror replay streamed as it is written.
@@ -210,6 +231,8 @@ async def stream_replay_file(
     saved = db.scalar(select(File).where(File._id == row._id))
     if not saved:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to persist file metadata")
+
+    _announce_upload(db, token_row, user, saved, original_name)
 
     return {
         "id": saved._id,
