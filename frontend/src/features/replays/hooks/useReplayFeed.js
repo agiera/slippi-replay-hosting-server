@@ -14,7 +14,8 @@ const PAGE_SIZE = 40;
 export function useReplayFeed(filters) {
   const [files, setFiles] = useState([]);
   const [cursor, setCursor] = useState(null);
-  const [hasMore, setHasMore] = useState(true);
+  // No pagination until a first page supplies a cursor.
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [preservedTerminalRows, setPreservedTerminalRows] = useState([]);
@@ -79,7 +80,10 @@ export function useReplayFeed(filters) {
             return;
           }
           const nextCursor = data?.next_cursor ?? null;
-          setFiles((prev) => [...prev, ...data.items]);
+          setFiles((prev) => {
+            const seen = new Set(prev.map((file) => file.id));
+            return [...prev, ...data.items.filter((file) => !seen.has(file.id))];
+          });
           setCursor(nextCursor);
           // Stop auto-pagination if server does not provide a cursor or repeats it.
           setHasMore(nextCursor !== null && nextCursor !== cursor);
