@@ -145,3 +145,65 @@ def test_partial_without_game_start_is_stored_but_not_grouped(db_session, storag
     assert (row.game_key, row.is_partial, row.source_size_bytes) == (None, None, len(tiny))
     with pytest.raises(DuplicateReplayError):
         persist_replay_upload(db_session, token_row=token, repository_name="public", original_name="g.slp", data=tiny)
+
+
+def _fake_parser(*, ports: tuple[int, ...]):
+    from app.services.peppi_ingest import ParsedReplayData
+
+    def parse(data: bytes, suffix: str = ".slp") -> ParsedReplayData:
+        players = [
+            {"port": port, "type": 0, "character_id": 2, "connect_code": None, "display_name": None,
+             "tag": f"p{port}", "user_id": None}
+            for port in ports
+        ]
+        return ParsedReplayData(
+            stage=31, start_time="2026-01-01T00:00:00Z", last_frame=len(data), is_teams=0,
+            players=players, peppi_bytes=b"peppi:" + data,
+        )
+
+    return parse
+
+
+def test_replacing_a_partial_also_removes_its_game_and_players(db_session, storage):
+    from app.models.game import Game
+    from app.models.player import Player
+
+    token, _repo = _seed_token(db_session, repo_name="public", raw_token="slp_partial_f")
+    partial, _ = recording(14, 10, finished=False)
+    _, complete = recording(14, 30, finished=True)
+
+    persist_replay_upload(
+        db_session, token_row=token, repository_name="public", original_name="g.slp",
+        data=partial, parse_replay=_fake_parser(ports=(1, 2)),
+    )
+    db_session.commit()
+    [partial_row] = _rows(db_session)
+    assert partial_row.name.endswith(".peppi.json.gz")
+    assert _artifacts_exist(partial_row)
+    partial_paths = replay_artifact_paths(partial_row.folder, partial_row.name)
+
+    new_row = persist_replay_upload(
+        db_session, token_row=token, repository_name="public", original_name="g.slp",
+        data=complete, parse_replay=_fake_parser(ports=(1, 3)),
+    )
+    db_session.commit()
+
+    [game] = db_session.scalars(select(Game)).all()
+    assert game.file_id == new_row._id and game.last_frame == len(complete)
+    assert sorted(p.port for p in db_session.scalars(select(Player))) == [1, 3]
+    assert not any(path.exists() for path in partial_paths)
+
+
+def test_stream_cut_off_inside_the_footer_is_stored_as_a_partial(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_partial_g")
+    finished, finished_on_disk = recording(15, 20, finished=True)
+    cut = finished[: len(finished) - len(FOOTER) + 14]
+
+    res = _stream(client, "slp_partial_g", cut)
+    assert res.status_code == 200
+    [row] = _rows(db_session)
+    assert row.is_partial is True
+
+    assert _upload(client, "slp_partial_g", data=finished_on_disk).status_code == 200
+    [row] = _rows(db_session)
+    assert row.is_partial is False

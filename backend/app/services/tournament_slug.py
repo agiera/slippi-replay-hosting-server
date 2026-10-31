@@ -116,7 +116,10 @@ def resolve_tournament_name(
     except Exception:
         return cached_name, cached_at
 
-    tournament_name = body.get("data", {}).get("tournament", {}).get("name")
+    # GraphQL returns null (not a missing key) for unknown slugs and on errors.
+    data = body.get("data") if isinstance(body, dict) else None
+    tournament = data.get("tournament") if isinstance(data, dict) else None
+    tournament_name = tournament.get("name") if isinstance(tournament, dict) else None
     if not tournament_name:
         return cached_name, cached_at
 

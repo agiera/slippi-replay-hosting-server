@@ -65,9 +65,11 @@ def finalize_streamed_slp(data: bytes) -> bytes:
     A finished game is repaired against its metadata footer; a game cut short
     (client timeout or disconnect) has its placeholder length set to whatever
     payload arrived so peppi can still read the frames that were captured.
+    A stream cut off inside the footer has the metadata key but not the whole
+    footer prefix; it is partial too.
     """
     if not data.startswith(STREAMED_SLP_HEADER):
         return data
-    if SLP_METADATA_MARKER in data:
+    if _SLP_METADATA_FOOTER_PREFIX in data:
         return finalize_streamed_slp_raw_length(data)
     return patch_partial_slp_raw_length(data)

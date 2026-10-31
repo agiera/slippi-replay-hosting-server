@@ -266,3 +266,21 @@ def test_partial_stream_reports_the_hash_the_server_stored(client, db_session, s
     again = _stream(client, "slp_stream_partial", unfinished)
     assert again.status_code == 409
     assert again.json()["sha256"] == stored.sha256
+
+
+def test_stream_larger_than_the_limit_is_rejected_and_not_stored(client, db_session, storage, monkeypatch):
+    from app.api.v1 import uploads
+
+    _seed_token(db_session, repo_name="public", raw_token="slp_stream_big")
+    monkeypatch.setattr(uploads, "_MAX_STREAM_BYTES", 16)
+    streamed, _ = _finished_slp(b"x" * 64)
+
+    res = _stream(client, "slp_stream_big", streamed)
+    assert res.status_code == 413
+    assert db_session.scalars(select(File)).all() == []
+
+
+def test_stream_requires_a_valid_token(client, db_session, storage):
+    streamed, _ = _finished_slp(b"frames")
+    assert _stream(client, "slp_not_a_real_token", streamed).status_code in (401, 403)
+    assert db_session.scalars(select(File)).all() == []
