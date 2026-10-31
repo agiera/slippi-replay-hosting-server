@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import shutil
-import socket
 import threading
 import time
 import uuid
@@ -21,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pyftpdlib.authorizers import AuthenticationFailed, DummyAuthorizer
-from pyftpdlib.handlers import DTPHandler, FTPHandler
+from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -34,6 +33,7 @@ from app.models.player import Player
 from app.models.source_metadata import SourceMetadata
 from app.models.user import User
 from app.schemas.streaming import FirmwareDiagnostics
+from app.services.ack_repeater import AckRepeaterThread
 from app.services.peppi_ingest import (
     normalize_controller_metadata_players,
     parse_slippi_start_partial,
@@ -152,35 +152,7 @@ class SourceTokenAuthorizer(DummyAuthorizer):
             self._contexts.pop(id(handler), None)
 
 
-# After a network blip the Wii's TCP waits ~34 s, then ~69 s, between
-# retransmissions and aborts after ~137 s, even once the path is back. Each
-# keepalive probe carries the server's current cumulative ACK, giving a stalled
-# Wii a chance to learn its data arrived within seconds of the path recovering.
-# 90 probes x 2 s outlasts the Wii's own abort, so the server never gives up first.
-_DATA_KEEPALIVE_IDLE_S = 2
-_DATA_KEEPALIVE_INTERVAL_S = 2
-_DATA_KEEPALIVE_PROBES = 90
-
-
-def _enable_data_keepalive(sock: socket.socket) -> None:
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, _DATA_KEEPALIVE_IDLE_S)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, _DATA_KEEPALIVE_INTERVAL_S)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, _DATA_KEEPALIVE_PROBES)
-    except OSError as exc:
-        # The connection may already be dead; DTPHandler handles that itself.
-        logger.debug("[FTP][TRACE] Could not enable data-channel keepalive: %s", exc)
-
-
-class KeepaliveDTPHandler(DTPHandler):
-    def __init__(self, sock, cmd_channel):
-        _enable_data_keepalive(sock)
-        super().__init__(sock, cmd_channel)
-
-
 class ReplayFTPHandler(FTPHandler):
-    dtp_handler = KeepaliveDTPHandler
     ftp_session: FTPSessionContext | None = None
     _session_transfer_attempted: bool = False
     _session_replay_transfer_attempted: bool = False
@@ -1041,6 +1013,7 @@ def _parse_ubjson_length(data: bytes, start: int) -> tuple[int, int]:
 _server_lock = threading.Lock()
 _server: FTPServer | None = None
 _server_thread: threading.Thread | None = None
+_ack_repeater: AckRepeaterThread | None = None
 
 _stream_state_lock = threading.Lock()
 _source_connections: dict[str, dict] = {}
@@ -1766,16 +1739,37 @@ def start_ftp_server() -> None:
         _server_thread = threading.Thread(target=_server.serve_forever, kwargs={"timeout": 1.0}, daemon=True)
         _server_thread.start()
 
+        _start_ack_repeater(passive_ports)
+
     logger.info("[FTP] Server listening on %s:%s", settings.FTP_HOST, settings.FTP_PORT)
 
 
+def _start_ack_repeater(passive_ports: range | None) -> None:
+    global _ack_repeater
+
+    if not settings.FTP_ACK_REPEATER_ENABLED:
+        return
+    if passive_ports is None:
+        logger.warning("[FTP][WARN] ACK repeater disabled: it needs FTP_PASSIVE_PORTS")
+        return
+    try:
+        _ack_repeater = AckRepeaterThread(passive_ports)
+    except OSError as exc:
+        logger.warning("[FTP][WARN] ACK repeater disabled: %s (needs CAP_NET_RAW)", exc)
+        return
+    _ack_repeater.start()
+
+
 def stop_ftp_server() -> None:
-    global _server, _server_thread
+    global _server, _server_thread, _ack_repeater
 
     with _server_lock:
         if _server is None:
             return
 
+        if _ack_repeater is not None:
+            _ack_repeater.stop()
+            _ack_repeater = None
         _server.close_all()
         if _server_thread is not None:
             _server_thread.join(timeout=2)

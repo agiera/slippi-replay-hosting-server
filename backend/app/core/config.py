@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     FTP_STAGING_DIR: str = "/tmp/slippi-ftp-staging"
     FTP_MAX_CONNECTIONS: int = 128
     FTP_MAX_CONNECTIONS_PER_IP: int = 8
+    FTP_ACK_REPEATER_ENABLED: bool = True
 
     @property
     def cors_origins_list(self) -> list[str]:
