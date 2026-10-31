@@ -65,6 +65,11 @@ def _is_fresh(timestamp: datetime, *, now: datetime) -> bool:
     return now - reference < CACHE_TTL
 
 
+def invalidate_tournament_name_cache(provider: str | None, slug: str | None) -> None:
+    if provider and slug:
+        _slug_cache.pop((provider, slug), None)
+
+
 def resolve_tournament_name(
     provider: str,
     slug: str,
@@ -79,7 +84,9 @@ def resolve_tournament_name(
         return cached_name, cached_at
 
     cache_key = (provider, slug)
-    if not force_refresh:
+    if force_refresh:
+        _slug_cache.pop(cache_key, None)
+    else:
         local_cached = _slug_cache.get(cache_key)
         if local_cached and _is_fresh(local_cached[1], now=now):
             return local_cached

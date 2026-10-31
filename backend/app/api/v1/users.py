@@ -30,7 +30,12 @@ from app.services.user_service import (
     get_or_create_public_repository,
     revoke_api_token_for_user,
 )
-from app.services.tournament_slug import TournamentSlugProviderError, normalize_provider_slug, resolve_tournament_name
+from app.services.tournament_slug import (
+    TournamentSlugProviderError,
+    invalidate_tournament_name_cache,
+    normalize_provider_slug,
+    resolve_tournament_name,
+)
 
 router = APIRouter()
 
@@ -211,6 +216,7 @@ def create_tournament(
         tournament.current_tournament_name, tournament.current_tournament_name_fetched_at = resolve_tournament_name(
             provider,
             slug,
+            force_refresh=True,
         )
 
     db.add(tournament)
@@ -267,19 +273,24 @@ def update_tournament(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     changed_provider_slug = provider != tournament.provider or slug != tournament.slug
+    invalidate_tournament_name_cache(tournament.provider, tournament.slug)
     tournament.provider = provider
     tournament.slug = slug
 
     if not provider or not slug:
         tournament.current_tournament_name = None
         tournament.current_tournament_name_fetched_at = None
-    elif changed_provider_slug or payload.refresh_current_tournament_name:
+    else:
+        # Saving always breaks the event title cache; keep the old name only as a
+        # fallback if the provider lookup fails and the slug is unchanged.
+        fallback_name = None if changed_provider_slug else tournament.current_tournament_name
+        fallback_at = None if changed_provider_slug else tournament.current_tournament_name_fetched_at
         tournament.current_tournament_name, tournament.current_tournament_name_fetched_at = resolve_tournament_name(
             provider,
             slug,
-            cached_name=tournament.current_tournament_name,
-            cached_at=tournament.current_tournament_name_fetched_at,
-            force_refresh=payload.refresh_current_tournament_name,
+            cached_name=fallback_name,
+            cached_at=fallback_at,
+            force_refresh=True,
         )
 
     db.add(tournament)
