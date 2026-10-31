@@ -199,3 +199,43 @@ def test_backfill_hashes_legacy_rows_from_storage_and_archive(db_session, testin
     assert by_name["raw.slp"] == hashlib.sha256(b"raw-bytes").hexdigest()
     assert by_name["parsed.peppi.json.gz"] == hashlib.sha256(b"original-zlp").hexdigest()
     assert by_name["raw-dup.slp"] is None
+
+
+def _finished_slp(payload: bytes) -> tuple[bytes, bytes]:
+    """Return (bytes as streamed live, bytes of the finished file on disk)."""
+    footer = b"U\x08metadata{U\x07startAtSU\x142026-01-01T00:00:00Z}}"
+    streamed = b"{U\x03raw[$U#l\x00\x00\x00\x00" + payload + footer
+    finished = bytearray(streamed)
+    finished[11:15] = len(payload).to_bytes(4, "big")
+    return streamed, bytes(finished)
+
+
+def _stream(client, raw_token: str, data: bytes, name: str = "Game_live.slp"):
+    return client.post(
+        "/api/v1/uploads/files/stream",
+        content=data,
+        headers={"X-API-Token": raw_token, "X-Filename": name, "Content-Type": "application/octet-stream"},
+    )
+
+
+def test_streamed_game_is_hashed_like_the_finished_file(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_stream_hash")
+    streamed, finished = _finished_slp(b"frame-bytes")
+
+    res = _stream(client, "slp_stream_hash", streamed)
+    assert res.status_code == 200
+    stored = db_session.scalar(select(File).where(File._id == res.json()["id"]))
+    # The daemon records the hash of the finished file; both must agree so the
+    # finished file is never uploaded a second time.
+    assert stored.sha256 == hashlib.sha256(finished).hexdigest()
+
+    assert _upload(client, "slp_stream_hash", data=finished).status_code == 409
+    assert _stream(client, "slp_stream_hash", streamed).status_code == 409
+    assert len(db_session.scalars(select(File)).all()) == 1
+
+
+def test_stream_endpoint_validates_input(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_stream_val")
+    assert _stream(client, "slp_stream_val", b"x", name="notes.txt").status_code == 400
+    assert _stream(client, "slp_stream_val", b"").status_code == 400
+    assert db_session.scalars(select(File)).all() == []
