@@ -1,4 +1,5 @@
-"""Backfill File.sha256 for replays stored before content-hash deduplication.
+"""Backfill File.sha256 and recording identity for replays stored before
+content-hash deduplication (sha256, game_key, is_partial, source_size_bytes).
 
 The hash is of the replay bytes as originally uploaded. Parsed replays are stored
 converted (``.peppi.json.gz``), so their original bytes are read from the view
@@ -16,11 +17,12 @@ import gzip
 import json
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.file import File
+from app.services.replay_identity import identify_slp
 from app.services.replay_upload import compute_content_hash
 from app.services.view_cache import PEPPI_SUFFIX
 
@@ -41,11 +43,13 @@ def original_replay_bytes(row: File) -> bytes | None:
 
 
 def run_backfill(limit: int | None = None, commit: bool = True) -> dict:
-    stats = {"scanned": 0, "hashed": 0, "missing_source": 0, "no_repository": 0, "duplicates": 0}
+    stats = {"scanned": 0, "hashed": 0, "identified": 0, "missing_source": 0, "no_repository": 0, "duplicates": 0}
     duplicates: list[dict] = []
 
     with SessionLocal() as db:
-        query = select(File).where(File.sha256.is_(None)).order_by(File._id)
+        # source_size_bytes is set for every processed row, so it marks rows whose
+        # identity columns still need filling.
+        query = select(File).where(or_(File.sha256.is_(None), File.source_size_bytes.is_(None))).order_by(File._id)
         if limit is not None:
             query = query.limit(limit)
         rows = list(db.scalars(query))
@@ -69,17 +73,27 @@ def run_backfill(limit: int | None = None, commit: bool = True) -> dict:
                 stats["missing_source"] += 1
                 continue
 
-            content_hash = compute_content_hash(data)
-            key = (row.repository_id, content_hash)
-            if key in claimed:
-                stats["duplicates"] += 1
-                duplicates.append({"file_id": row._id, "duplicate_of": claimed[key], "path": f"{row.folder}/{row.name}"})
-                continue
+            if row.source_size_bytes is None:
+                identity = identify_slp(data)
+                row.source_size_bytes = len(data)
+                row.game_key = identity.game_key if identity else None
+                row.is_partial = identity.is_partial if identity else None
+                stats["identified"] += 1
 
-            claimed[key] = row._id
-            row.sha256 = content_hash
-            stats["hashed"] += 1
-            if commit and stats["hashed"] % 200 == 0:
+            if row.sha256 is None:
+                content_hash = compute_content_hash(data)
+                key = (row.repository_id, content_hash)
+                if key in claimed:
+                    stats["duplicates"] += 1
+                    duplicates.append(
+                        {"file_id": row._id, "duplicate_of": claimed[key], "path": f"{row.folder}/{row.name}"}
+                    )
+                else:
+                    claimed[key] = row._id
+                    row.sha256 = content_hash
+                    stats["hashed"] += 1
+
+            if commit and stats["scanned"] % 200 == 0:
                 db.commit()
 
         if commit:

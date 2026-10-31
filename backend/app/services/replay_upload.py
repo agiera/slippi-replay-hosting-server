@@ -1,10 +1,11 @@
 import hashlib
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,7 +20,44 @@ from app.services.handwarmer import classify_handwarmer
 from app.services.peppi_ingest import parse_slippi_bytes, parse_slippi_stage_partial
 from app.services.slippi_profile import fetch_profile_by_connect_code
 from app.services.tournament_slug import resolve_tournament_name
-from app.services.view_cache import archive_view_replay_bytes, cache_view_replay_bytes, prune_view_cache
+from app.services.replay_identity import identify_slp
+from app.services.view_cache import (
+    archive_view_replay_bytes,
+    cache_view_replay_bytes,
+    prune_view_cache,
+    replay_artifact_paths,
+)
+
+logger = logging.getLogger(__name__)
+
+_PENDING_DELETES_KEY = "replay_upload.pending_file_deletes"
+
+
+def _delete_files_after_commit(db: Session, paths: list[Path]) -> None:
+    """Remove files once the current transaction commits; a rollback keeps them."""
+    db.info.setdefault(_PENDING_DELETES_KEY, []).extend(paths)
+
+
+@event.listens_for(Session, "after_commit")
+def _run_pending_file_deletes(session: Session) -> None:
+    for path in session.info.pop(_PENDING_DELETES_KEY, []):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove replaced replay file '%s': %s", path, exc)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_pending_file_deletes(session: Session) -> None:
+    session.info.pop(_PENDING_DELETES_KEY, None)
+
+
+def _unlink_quietly(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class DuplicateReplayError(Exception):
@@ -31,6 +69,7 @@ class DuplicateReplayError(Exception):
         self.folder = existing.folder
         self.name = existing.name
         self.size_bytes = existing.size_bytes
+        self.sha256 = existing.sha256
 
 
 def compute_content_hash(data: bytes) -> str:
@@ -363,6 +402,26 @@ def persist_replay_upload(
     if existing is not None:
         raise DuplicateReplayError(existing)
 
+    # Partial copies of a recording (live streams cut short) are replaced once a
+    # more complete copy arrives; a copy no better than one we have is a duplicate.
+    identity = identify_slp(data)
+    superseded: list[File] = []
+    if identity is not None:
+        siblings = list(
+            db.scalars(
+                select(File).where(File.repository_id == repository_row.id, File.game_key == identity.game_key)
+            )
+        )
+        partial_siblings = [row for row in siblings if row.is_partial]
+        complete_siblings = [row for row in siblings if row.is_partial is False]
+        if identity.is_partial:
+            if complete_siblings:
+                raise DuplicateReplayError(complete_siblings[0])
+            longest = max(partial_siblings, key=lambda row: row.source_size_bytes or 0, default=None)
+            if longest is not None and (longest.source_size_bytes or 0) >= len(data):
+                raise DuplicateReplayError(longest)
+        superseded = partial_siblings
+
     safe_repo_name = _sanitize_segment(repository_row.name, "public")
     safe_collection_name = _sanitize_segment(token_row.source_name, "default")
     now = datetime.now(timezone.utc)
@@ -438,6 +497,9 @@ def persist_replay_upload(
         tournament_name=tournament_snapshot_name,
         repository_id=repository_row.id,
         sha256=content_hash,
+        game_key=identity.game_key if identity else None,
+        is_partial=identity.is_partial if identity else None,
+        source_size_bytes=len(data),
     )
     db.add(row)
     try:
@@ -445,11 +507,21 @@ def persist_replay_upload(
     except IntegrityError:
         # A concurrent upload of the same bytes won the race after our check.
         db.rollback()
-        target_path.unlink(missing_ok=True)
+        _unlink_quietly(replay_artifact_paths(folder_rel, target_path.name))
         existing = find_file_by_hash(db, repository_id=repository_row.id, content_hash=content_hash)
         if existing is None:
             raise
         raise DuplicateReplayError(existing) from None
+
+    for old_row in superseded:
+        logger.info(
+            "Replacing partial replay %s/%s with more complete copy %s/%s",
+            old_row.folder, old_row.name, row.folder, row.name,
+        )
+        _delete_files_after_commit(db, replay_artifact_paths(old_row.folder, old_row.name))
+        db.delete(old_row)
+    if superseded:
+        db.flush()
 
     profile_cache: dict[str, object | None] = {}
     handwarmer = classify_handwarmer(parsed_replay)

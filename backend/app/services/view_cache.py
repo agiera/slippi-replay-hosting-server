@@ -149,3 +149,16 @@ def prune_view_cache(force: bool = False) -> None:
                 pass
 
     _last_pruned_at = now
+
+
+def replay_artifact_paths(folder_rel: str, name: str) -> list[Path]:
+    """Every on-disk file kept for a stored replay: the stored file plus, for
+    parsed replays, its view-cache copy, archived original and metadata sidecar."""
+    paths = [Path(settings.REPLAY_STORAGE_DIR) / folder_rel / name]
+    if name.endswith(PEPPI_SUFFIX):
+        stem = _strip_peppi_suffix(name)
+        for suffix in (".slp", ".zlp"):
+            paths.append(Path(settings.REPLAY_VIEW_CACHE_DIR) / folder_rel / f"{stem}{suffix}")
+            paths.append(Path(settings.REPLAY_VIEW_ARCHIVE_DIR) / folder_rel / f"{stem}{suffix}.gz")
+            paths.append(Path(settings.REPLAY_VIEW_ARCHIVE_DIR) / folder_rel / f"{stem}{suffix}.meta.json")
+    return paths

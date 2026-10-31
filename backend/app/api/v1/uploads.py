@@ -48,6 +48,7 @@ def _duplicate_response(exc: DuplicateReplayError) -> JSONResponse:
             "folder": exc.folder,
             "name": exc.name,
             "size_bytes": exc.size_bytes,
+            "sha256": exc.sha256,
         },
     )
 
@@ -98,6 +99,7 @@ async def upload_replay_file(
         "folder": saved.folder,
         "name": saved.name,
         "size_bytes": saved.size_bytes,
+        "sha256": saved.sha256,
     }
 
 
@@ -214,4 +216,5 @@ async def stream_replay_file(
         "folder": saved.folder,
         "name": saved.name,
         "size_bytes": saved.size_bytes,
+        "sha256": saved.sha256,
     }

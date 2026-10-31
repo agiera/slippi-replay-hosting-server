@@ -65,6 +65,7 @@ def test_upload_records_hash_and_rejects_identical_bytes_with_409(client, db_ses
     assert first.status_code == 200
     stored = db_session.scalar(select(File).where(File._id == first.json()["id"]))
     assert stored.sha256 == DATA_HASH
+    assert first.json()["sha256"] == DATA_HASH
     assert stored.repository_id is not None
 
     second = _upload(client, "slp_dedupe_a", name="renamed-copy.slp")
@@ -72,6 +73,7 @@ def test_upload_records_hash_and_rejects_identical_bytes_with_409(client, db_ses
     body = second.json()
     assert body["detail"] == "Replay already uploaded"
     assert (body["id"], body["folder"], body["name"]) == (stored._id, stored.folder, stored.name)
+    assert body["sha256"] == DATA_HASH
 
     assert len(db_session.scalars(select(File)).all()) == 1
     stored_files = [p for p in (storage / "uploads").rglob("*") if p.is_file()]
@@ -200,6 +202,14 @@ def test_backfill_hashes_legacy_rows_from_storage_and_archive(db_session, testin
     assert by_name["parsed.peppi.json.gz"] == hashlib.sha256(b"original-zlp").hexdigest()
     assert by_name["raw-dup.slp"] is None
 
+    rows = {row.name: row for row in db_session.scalars(select(File))}
+    assert rows["raw.slp"].source_size_bytes == len(b"raw-bytes")
+    assert rows["raw.slp"].game_key is None, "not a recognizable .slp"
+    assert rows["gone.slp"].source_size_bytes is None
+
+    rerun = backfill_file_sha256.run_backfill()
+    assert rerun["hashed"] == 0 and rerun["identified"] == 0
+
 
 def _finished_slp(payload: bytes) -> tuple[bytes, bytes]:
     """Return (bytes as streamed live, bytes of the finished file on disk)."""
@@ -228,6 +238,7 @@ def test_streamed_game_is_hashed_like_the_finished_file(client, db_session, stor
     # The daemon records the hash of the finished file; both must agree so the
     # finished file is never uploaded a second time.
     assert stored.sha256 == hashlib.sha256(finished).hexdigest()
+    assert res.json()["sha256"] == stored.sha256
 
     assert _upload(client, "slp_stream_hash", data=finished).status_code == 409
     assert _stream(client, "slp_stream_hash", streamed).status_code == 409
@@ -239,3 +250,19 @@ def test_stream_endpoint_validates_input(client, db_session, storage):
     assert _stream(client, "slp_stream_val", b"x", name="notes.txt").status_code == 400
     assert _stream(client, "slp_stream_val", b"").status_code == 400
     assert db_session.scalars(select(File)).all() == []
+
+
+def test_partial_stream_reports_the_hash_the_server_stored(client, db_session, storage):
+    _seed_token(db_session, repo_name="public", raw_token="slp_stream_partial")
+    # A game that never finished: the header length is still 0 on disk, and the
+    # server fills it in before storing, so only the server knows the stored hash.
+    unfinished = b"{U\x03raw[$U#l\x00\x00\x00\x00" + b"frames-so-far"
+
+    first = _stream(client, "slp_stream_partial", unfinished)
+    assert first.status_code == 200
+    stored = db_session.scalar(select(File).where(File._id == first.json()["id"]))
+    assert first.json()["sha256"] == stored.sha256 != hashlib.sha256(unfinished).hexdigest()
+
+    again = _stream(client, "slp_stream_partial", unfinished)
+    assert again.status_code == 409
+    assert again.json()["sha256"] == stored.sha256

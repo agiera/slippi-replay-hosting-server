@@ -84,9 +84,18 @@ target repository is always the token's repository.
   (max 1000); returns `{"existing": {"<sha256>": {"id", "folder", "name"}}}`
   for hashes already stored in the repository.
 
+Responses (including 409s) include the stored `sha256`. `POST
+/api/v1/uploads/files/stream` accepts a live game streamed as it is recorded
+and stores whatever arrived if the stream is cut short.
+
 Duplicates are detected by the SHA-256 of the replay bytes as uploaded, unique
-per repository. Files stored before this existed have no hash; after migrating,
-backfill them (preview with `--dry-run`):
+per repository. Copies of the same recording are also grouped by a key derived
+from the replay's Game Start event: a partial copy (a cut-short live stream) is
+replaced when a more complete copy arrives, and a copy that is no more complete
+than one already stored is rejected with 409. Complete copies are never replaced.
+
+Files stored before this existed have no hash or recording key; after
+migrating, backfill them (preview with `--dry-run`):
 
 ```bash
 docker compose run --rm backend python -m app.scripts.backfill_file_sha256 --dry-run
