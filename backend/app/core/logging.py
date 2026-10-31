@@ -16,8 +16,12 @@ def configure_logging() -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
 
     root = logging.getLogger()
-    root.setLevel(settings.LOG_LEVEL)
+    requested_level = str(settings.LOG_LEVEL).strip().upper()
+    level = requested_level if requested_level in logging.getLevelNamesMapping() else "INFO"
+    root.setLevel(level)
     root.handlers = [handler]
+    if level != requested_level:
+        root.warning("Unknown LOG_LEVEL %r; using INFO", settings.LOG_LEVEL)
 
     # uvicorn installs its own handlers on these; let ours format them too.
     for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
