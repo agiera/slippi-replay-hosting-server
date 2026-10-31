@@ -15,6 +15,7 @@ dist/
 # Misc
 .DS_Store
 *.log
+.vscode
 
 # backend
 backend/uploads
