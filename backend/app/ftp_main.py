@@ -11,10 +11,12 @@ from __future__ import annotations
 import signal
 import threading
 
+from app.core.logging import configure_logging
 from app.services.ftp_server import start_ftp_server, stop_ftp_server
 
 
 def main() -> None:
+    configure_logging()
     stop = threading.Event()
 
     def _handle_signal(signum, _frame) -> None:

@@ -40,9 +40,6 @@ services:
     logging: *default-logging
     env_file:
       - .env
-    # The FTP ACK repeater sniffs and re-sends packets (Docker's default, explicit for other runtimes).
-    cap_add:
-      - NET_RAW
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
       REPLAY_VIEW_ARCHIVE_DIR: /app/uploads-view-archive
@@ -85,6 +82,9 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
       FTP_STAGING_DIR: /app/ftp-staging
+    # The FTP ACK repeater sniffs and re-sends packets (Docker's default, explicit for other runtimes).
+    cap_add:
+      - NET_RAW
     ports:
       - "${FTP_PORT:-2121}:${FTP_PORT:-2121}"
       - "${FTP_PASSIVE_PORTS:-22100-22199}:${FTP_PASSIVE_PORTS:-22100-22199}"
