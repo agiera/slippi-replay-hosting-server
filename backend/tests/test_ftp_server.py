@@ -51,7 +51,7 @@ def _get_source_state(source_name: str) -> dict:
     return state
 
 
-@pytest.mark.parametrize("invalid", [None, "json", "extra", "oversize", "type"])
+@pytest.mark.parametrize("invalid", [None, "v2", "json", "extra", "oversize", "type", "port_extra", "port_hex"])
 def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
     from app.services import ftp_server
 
@@ -61,6 +61,18 @@ def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
         "cancel_reason": 1, "footer_result": 1, "finish_result": 1,
         "fallback_result": 1, "local_available": 0, "game_end_seen": 1,
     }
+    if invalid in {"v2", "port_extra", "port_hex"}:
+        port = {
+            "tag": "ca110001", "calls": 4294967295, "attempts": 2, "rearms": 1, "runs": 3,
+            "n_chunks": 0, "comcsr": "20025003", "iobuf0": "00000000", "cmd_idx": -1,
+            "valid_len": 0,
+        }
+        payload["version"] = 2
+        payload["controller_ports"] = [dict(port) for _ in range(4)]
+        if invalid == "port_extra":
+            payload["controller_ports"][0]["secret"] = "unexpected"
+        if invalid == "port_hex":
+            payload["controller_ports"][0]["tag"] = "CA11"
     if invalid == "extra":
         payload["secret"] = "unexpected"
     if invalid == "type":
@@ -94,10 +106,14 @@ def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
 
     assert not diagnostic_file.exists()
     assert not handler._session_replay_transfer_attempted
-    assert ("Rejected diagnostic" in caplog.text) == (invalid is not None)
-    if invalid is None:
+    rejected = invalid not in {None, "v2"}
+    assert ("Rejected diagnostic" in caplog.text) == rejected
+    if not rejected:
         assert "source='wii-test' replay='Game_test.slp'" in caplog.text
         assert '"bytes_sent":1234' in caplog.text
+    if invalid == "v2":
+        assert '"tag":"ca110001"' in caplog.text
+        assert '"rearms":1' in caplog.text
 
 
 def test_diagnostic_stor_does_not_start_a_game(monkeypatch, tmp_path):

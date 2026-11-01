@@ -24,6 +24,10 @@ ETH_P_ALL = 0x0003
 PACKET_OUTGOING = 4
 FIN, SYN, RST, ACK = 0x01, 0x02, 0x04, 0x10
 
+# Seconds after an ACK at which to repeat it. A Wii re-sends after ~0.55 s of silence,
+# and that timeout is what shrinks its segments to 536 B, so three copies must land first.
+DEFAULT_SCHEDULE = (0.12, 0.25, 0.4, 0.8, 1.6, 3.2)
+
 
 @dataclass(frozen=True)
 class Segment:
@@ -77,7 +81,7 @@ class _Pending:
     ack: int
     acked_at: float
     next_send: float
-    interval: float
+    sent: int = 0
     repeated: bool = False
 
 
@@ -87,12 +91,12 @@ class AckRepeater:
     def __init__(
         self,
         ports: range,
-        first_delay: float = 0.3,
+        schedule: tuple[float, ...] = DEFAULT_SCHEDULE,
         max_interval: float = 4.0,
         give_up_after: float = 150.0,
     ) -> None:
         self.ports = ports
-        self.first_delay = first_delay
+        self.schedule = schedule
         self.max_interval = max_interval
         self.give_up_after = give_up_after
         self.stats: collections.Counter[str] = collections.Counter()
@@ -110,7 +114,7 @@ class AckRepeater:
             pending = self._pending.get(key)
             if pending is not None and packet == pending.packet:
                 return  # our own copy seen on the way out
-            self._pending[key] = _Pending(with_tcp_checksum(packet), seg.ack, now, now + self.first_delay, self.first_delay)
+            self._pending[key] = _Pending(with_tcp_checksum(packet), seg.ack, now, now + self.schedule[0])
         elif not outgoing and seg.dport in self.ports:
             key = (seg.src, seg.sport, seg.dport)
             if seg.flags & (FIN | RST):
@@ -129,8 +133,11 @@ class AckRepeater:
             elif now >= pending.next_send:
                 packets.append(pending.packet)
                 pending.repeated = True
-                pending.interval = min(pending.interval * 2, self.max_interval)
-                pending.next_send = now + pending.interval
+                pending.sent += 1
+                if pending.sent < len(self.schedule):
+                    pending.next_send = pending.acked_at + self.schedule[pending.sent]
+                else:
+                    pending.next_send = now + self.max_interval
                 self.stats["repeats"] += 1
         return packets
 

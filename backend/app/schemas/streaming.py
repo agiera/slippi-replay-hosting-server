@@ -1,15 +1,36 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
 from app.schemas.replay import ReplayPlayerPublic
 
 
+U32 = Annotated[int, Field(ge=0, le=0xFFFFFFFF)]
+HexU32 = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
+
+
+class ControllerProbeDiagnostics(BaseModel):
+    """Per-SI-channel state of the PPC controller-metadata probe (diag v2)."""
+
+    model_config = {"extra": "forbid", "strict": True}
+
+    tag: HexU32
+    calls: U32
+    attempts: U32
+    rearms: U32
+    runs: U32
+    n_chunks: U32
+    comcsr: HexU32
+    iobuf0: HexU32
+    cmd_idx: int = Field(ge=-0x80000000, le=0x7FFFFFFF)
+    valid_len: int = Field(ge=0, le=0xFFFF)
+
+
 class FirmwareDiagnostics(BaseModel):
     model_config = {"extra": "forbid", "strict": True}
 
-    version: Literal[1]
+    version: Literal[1, 2]
     bytes_sent: int = Field(ge=0, le=0xFFFFFFFF)
     stalls: int = Field(ge=0, le=0xFFFFFFFF)
     max_stall_ms: int = Field(ge=0, le=0xFFFFFFFF)
@@ -22,6 +43,7 @@ class FirmwareDiagnostics(BaseModel):
     fallback_result: int = Field(ge=-4, le=1)
     local_available: Literal[0, 1]
     game_end_seen: Literal[0, 1]
+    controller_ports: list[ControllerProbeDiagnostics] | None = Field(default=None, max_length=4)
 
 
 class TournamentSeriesPublic(BaseModel):

@@ -28,8 +28,8 @@ def test_parse_segment_reports_payload_length():
     assert parse_segment(b"\x60" + bytes(39)) is None  # IPv6
 
 
-def test_repeats_latest_ack_with_capped_backoff_while_wii_is_silent():
-    rep = AckRepeater(PORTS, first_delay=0.3, max_interval=1.0)
+def test_repeats_latest_ack_on_schedule_then_at_capped_interval_while_wii_is_silent():
+    rep = AckRepeater(PORTS, schedule=(0.3, 0.9, 1.9), max_interval=1.0)
     ack = with_tcp_checksum(_server_ack(5000))
     rep.observe(ack, outgoing=True, now=0.0)
 
@@ -37,10 +37,20 @@ def test_repeats_latest_ack_with_capped_backoff_while_wii_is_silent():
     assert rep.due(0.3) == [ack]
     rep.observe(ack, outgoing=True, now=0.3)  # the sniffer sees our own copy go out
     assert rep.due(0.8) == []
-    assert rep.due(0.9) == [ack]  # interval doubled to 0.6
-    assert rep.due(1.9) == [ack]  # capped at 1.0
+    assert rep.due(0.9) == [ack]
+    assert rep.due(1.9) == [ack]
+    assert rep.due(2.8) == []  # schedule exhausted: every max_interval
     assert rep.due(2.9) == [ack]
     assert rep.stats["repeats"] == 4
+
+
+def test_default_schedule_lands_three_copies_before_the_wii_retransmit_timer():
+    rep = AckRepeater(PORTS)
+    rep.observe(_server_ack(5000), outgoing=True, now=0.0)
+
+    sent_at = [t for t in (0.1, 0.12, 0.25, 0.4, 0.5) if rep.due(t)]
+
+    assert sent_at == [0.12, 0.25, 0.4]
 
 
 def test_repeated_copy_carries_a_complete_tcp_checksum():
@@ -91,7 +101,7 @@ def test_wii_data_before_first_repeat_is_not_counted():
 
 
 def test_newer_ack_replaces_older_and_restarts_delay():
-    rep = AckRepeater(PORTS, first_delay=0.3)
+    rep = AckRepeater(PORTS, schedule=(0.3,))
     rep.observe(_server_ack(5000), outgoing=True, now=0.0)
     newer = with_tcp_checksum(_server_ack(5536))
     rep.observe(newer, outgoing=True, now=0.2)

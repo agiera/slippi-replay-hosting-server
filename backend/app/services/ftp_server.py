@@ -337,10 +337,12 @@ class ReplayFTPHandler(FTPHandler):
 
             original_name = staged_path.name
             if original_name.lower().endswith(".diag.json"):
+                raw_diagnostic: bytes | None = None
                 try:
                     if staged_path.stat().st_size > 2048:
                         raise ValueError("diagnostic sidecar exceeds 2048 bytes")
-                    diagnostic = FirmwareDiagnostics.model_validate_json(staged_path.read_bytes())
+                    raw_diagnostic = staged_path.read_bytes()
+                    diagnostic = FirmwareDiagnostics.model_validate_json(raw_diagnostic)
                     logger.info(
                         "[FTP][DIAG] source=%r replay=%r summary=%s",
                         self.ftp_session.source_name,
@@ -348,7 +350,13 @@ class ReplayFTPHandler(FTPHandler):
                         diagnostic.model_dump_json(),
                     )
                 except ValueError as exc:
-                    logger.warning("[FTP][DIAG] Rejected diagnostic source=%r: %s", self.ftp_session.source_name, exc)
+                    logger.warning(
+                        "[FTP][DIAG] Rejected diagnostic source=%r replay=%r: %s raw=%r",
+                        self.ftp_session.source_name,
+                        original_name[:-10],
+                        exc,
+                        raw_diagnostic,
+                    )
                 return
             data = staged_path.read_bytes()
 
