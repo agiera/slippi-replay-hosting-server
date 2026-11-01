@@ -7,6 +7,7 @@ from app.schemas.replay import ReplayPlayerPublic
 
 
 U32 = Annotated[int, Field(ge=0, le=0xFFFFFFFF)]
+S32 = Annotated[int, Field(ge=-0x80000000, le=0x7FFFFFFF)]
 HexU32 = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
 
 
@@ -27,6 +28,18 @@ class ControllerProbeDiagnostics(BaseModel):
     valid_len: int = Field(ge=0, le=0xFFFF)
 
 
+class TcpDiagnostics(BaseModel):
+    """Stream data socket MSS: IOS drops to 536 after consecutive RTOs; firmware raises it back."""
+
+    model_config = {"extra": "forbid", "strict": True}
+
+    mss_start: U32
+    mss_min: U32
+    raises: U32
+    raise_result: S32
+    mss_after_raise: U32
+
+
 class FirmwareDiagnostics(BaseModel):
     model_config = {"extra": "forbid", "strict": True}
 
@@ -43,6 +56,7 @@ class FirmwareDiagnostics(BaseModel):
     fallback_result: int = Field(ge=-4, le=1)
     local_available: Literal[0, 1]
     game_end_seen: Literal[0, 1]
+    tcp: TcpDiagnostics | None = None
     controller_ports: list[ControllerProbeDiagnostics] | None = Field(default=None, max_length=4)
 
 

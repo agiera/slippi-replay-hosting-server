@@ -51,7 +51,7 @@ def _get_source_state(source_name: str) -> dict:
     return state
 
 
-@pytest.mark.parametrize("invalid", [None, "v2", "json", "extra", "oversize", "type", "port_extra", "port_hex"])
+@pytest.mark.parametrize("invalid", [None, "v2", "tcp", "json", "extra", "oversize", "type", "port_extra", "port_hex", "tcp_extra"])
 def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
     from app.services import ftp_server
 
@@ -75,6 +75,14 @@ def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
             payload["controller_ports"][0]["tag"] = "CA11"
     if invalid == "extra":
         payload["secret"] = "unexpected"
+    if invalid in {"tcp", "tcp_extra"}:
+        payload["version"] = 2
+        payload["tcp"] = {
+            "mss_start": 1240, "mss_min": 536, "raises": 1, "raise_result": 0,
+            "mss_after_raise": 1240,
+        }
+        if invalid == "tcp_extra":
+            payload["tcp"]["secret"] = 1
     if invalid == "type":
         payload["stalls"] = "2"
     diagnostic_file = tmp_path / "Game_test.slp.diag.json"
@@ -106,7 +114,7 @@ def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
 
     assert not diagnostic_file.exists()
     assert not handler._session_replay_transfer_attempted
-    rejected = invalid not in {None, "v2"}
+    rejected = invalid not in {None, "v2", "tcp"}
     assert ("Rejected diagnostic" in caplog.text) == rejected
     if not rejected:
         assert "source='wii-test' replay='Game_test.slp'" in caplog.text
@@ -114,6 +122,9 @@ def test_diagnostic_upload_is_log_only(monkeypatch, tmp_path, caplog, invalid):
     if invalid == "v2":
         assert '"tag":"ca110001"' in caplog.text
         assert '"rearms":1' in caplog.text
+    if invalid == "tcp":
+        assert '"mss_min":536' in caplog.text
+        assert '"mss_after_raise":1240' in caplog.text
 
 
 def test_diagnostic_stor_does_not_start_a_game(monkeypatch, tmp_path):
