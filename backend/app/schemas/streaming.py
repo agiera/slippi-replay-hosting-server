@@ -38,6 +38,12 @@ class TcpDiagnostics(BaseModel):
     raises: U32
     raise_result: S32
     mss_after_raise: U32
+    sndbuf_start: U32 | None = None
+    sndbuf_set_result: S32 | None = None
+    sndbuf_after: U32 | None = None
+    send_calls: U32 | None = None
+    send_partial: U32 | None = None
+    send_ms: U32 | None = None
 
 
 class FirmwareDiagnostics(BaseModel):
