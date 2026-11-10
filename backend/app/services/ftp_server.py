@@ -38,6 +38,7 @@ from app.services.peppi_ingest import (
     parse_slippi_start_partial,
 )
 from app.services.replay_upload import DuplicateReplayError, persist_replay_upload
+from app.services.slpz import SLPZ_SUFFIX, SlpzDecodingFile
 from app.services.stream_state import (
     get_connection as _get_connection,
     get_latest_connection as _get_latest_source_connection,
@@ -245,6 +246,10 @@ class ReplayFTPHandler(FTPHandler):
 
     def ftp_STOR(self, file: str, mode: str = "w") -> None:
         self._session_transfer_attempted = True
+        compressed = str(file).lower().endswith(SLPZ_SUFFIX)
+        if compressed:
+            # Stage under the plain .slp name; the bytes are decoded as they arrive.
+            file = str(file)[:-1]
         stor_file_key = self._session_file_key(file)
         if stor_file_key:
             self._session_seen_stor_file_keys.add(stor_file_key)
@@ -300,6 +305,15 @@ class ReplayFTPHandler(FTPHandler):
                 )
             self._start_live_partial_parse(Path(str(file)), self.ftp_session.source_name)
         super().ftp_STOR(file, mode)
+        if compressed:
+            self._wrap_slpz_upload()
+
+    def _wrap_slpz_upload(self) -> None:
+        if self._in_dtp_queue is not None:
+            fd, cmd = self._in_dtp_queue
+            self._in_dtp_queue = (SlpzDecodingFile(fd), cmd)
+        elif self.data_channel is not None and self.data_channel.file_obj is not None:
+            self.data_channel.file_obj = SlpzDecodingFile(self.data_channel.file_obj)
 
     def _start_live_partial_parse(self, staged_path: Path, source_name: str) -> None:
         stop_event = threading.Event()

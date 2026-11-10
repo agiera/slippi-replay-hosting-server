@@ -16,6 +16,7 @@ dist/
 .DS_Store
 *.log
 .vscode
+*.pcap
 
 # backend
 backend/uploads
